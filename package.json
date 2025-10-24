@@ -1,13 +1,14 @@
 {
-    "name": "sakai-vue",
-    "version": "4.3.0",
+    "name": "yeeh-doh",
+    "version": "1.0.0",
     "type": "module",
     "scripts": {
         "dev": "vite",
         "build": "vite build",
         "preview": "vite preview",
         "copy": "node ./scripts/copy-scene.js",
-        "lint": "eslint --fix . --ext .vue,.js,.jsx,.cjs,.mjs --fix --ignore-path .gitignore"
+        "lint": "eslint --fix . --ext .vue,.js,.jsx,.cjs,.mjs --fix --ignore-path .gitignore",
+        "deploy": "gh-pages -d dist"
     },
     "dependencies": {
         "@babylonjs/core": "^8.15.1",
@@ -34,6 +35,7 @@
         "autoprefixer": "^10.4.19",
         "eslint": "^8.57.0",
         "eslint-plugin-vue": "^9.23.0",
+        "gh-pages": "^6.3.0",
         "madge": "^8.0.0",
         "postcss": "^8.4.40",
         "prettier": "^3.2.5",
