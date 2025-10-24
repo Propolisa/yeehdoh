@@ -6,23 +6,19 @@
     <!-- Splash overlay (fades out on click) -->
     <SplashScreen v-if="showSplash" @done="showSplash = false" />
 
-    <!-- Info toggle button -->
+   <!-- Info toggle button -->
     <button class="credit-toggle" @click="showCredits = !showCredits">
       {{ showCredits ? '✕' : 'ℹ︎' }}
     </button>
 
     <!-- Credits box -->
     <div class="credit-box" v-if="showCredits">
-      <h4>Wooden Mannequin (Lay Figure) – Rigged</h4>
+      <h4>Credits</h4>
       <p>
-        3D Model<br/>
-        Avatar of
-        <a
-          href="https://www.artstation.com/artwork/lRWyaz"
-          target="_blank"
-          rel="noopener"
-        >jamescwright</a>
-        <br/>(James Wright)
+        Thanks to:<br/>
+        <strong>@inteja</strong> — vertex sway concept<br/>
+        <strong>@phaselock</strong> — water shader<br/>
+        <strong>@Nevergrind</strong> — modified wave shader
       </p>
     </div>
   </div>
