@@ -1,10 +1,10 @@
-import { COLORS } from '@/lib/colors';
-import { Entity } from '@/lib/entity';
-import * as Terrain from '@/lib/static/terrain';
 import { Animation, Color3, Color4, Mesh, MeshBuilder, Ray, Scalar, SolidParticleSystem, TransformNode, Vector3, VertexData } from '@babylonjs/core';
-import { emitFruit, emitPetal, makePalmFrond } from '../geometry/emitters';
+import { COLORS } from '../colors.js';
+import { Entity } from '../entity.js';
+import * as Terrain from '../static/terrain.js';
+import { emitFruit, emitPetal, makePalmFrond } from '../geometry/emitters.js';
 // 0 → lowest poly, 1 → full detail
-window.POLY_THROTTLE =  .1;
+window.POLY_THROTTLE = 0.1;
 
 // Utility: scale particle count / quality according to POLY_THROTTLE
 window.scaleQuality = function (count, minFactor = 0.25) {
@@ -215,14 +215,13 @@ export class Tree extends Plant {
         // === Height & proportions ===
         const envFactor = Scalar.Clamp((fertility + moisture * 0.8) * 0.6 + (1 - humidity) * 0.4, 0, 1);
         const baseHeight = Scalar.Lerp(4.5, 12.0, envFactor);
-        const h = baseHeight * rRange(0.4, .8);
+        const h = baseHeight * rRange(0.4, 0.8);
         const trunkThick = Scalar.Lerp(0.3, 0.55, envFactor);
         const canopyRadius = Scalar.Lerp(1.2, 2.2, envFactor);
         const canopyDensity = window.scaleQuality(
-    Math.floor(Scalar.Lerp(150, 350, envFactor)),
-    0.25 // at POLY_THROTTLE = 0 → 25% of original count
-);
-
+            Math.floor(Scalar.Lerp(150, 350, envFactor)),
+            0.25 // at POLY_THROTTLE = 0 → 25% of original count
+        );
 
         // === Curved lean parameters ===
         const leanAmt = Scalar.Lerp(0.02, 0.25, Scalar.InverseLerp(4.5, 12.0, h));
@@ -290,9 +289,7 @@ export class Tree extends Plant {
                 const theta = rand() * Math.PI * 2;
                 const phi = Math.acos(2 * rand() - 1);
                 p.position.set(r * Math.sin(phi) * Math.cos(theta), r * Math.cos(phi), r * Math.sin(phi) * Math.sin(theta));
-                const s = window.scaleSize(
-    Scalar.Lerp(2.0, 1.2, humidity) * (0.8 + rand() * 0.5)
-);
+                const s = window.scaleSize(Scalar.Lerp(2.0, 1.2, humidity) * (0.8 + rand() * 0.5));
 
                 p.scaling.setAll(s);
                 const jitter = 0.12;
@@ -476,85 +473,67 @@ export class Palm extends Plant {
         frondsMesh.parent = crown;
         frondsMesh.scaling.setAll(0);
 
-
         // ======================================================
-// 🍈 FRUIT CLUSTERS (realistic distribution)
-// ======================================================
-const fertility = params.fertility ?? 0.5;
-const moisture = params.moisture ?? 0.5;
-const fruitChance = Scalar.Clamp(0.2 + 0.5 * fertility + 0.4 * moisture + Math.random() * 0.2, 0, 1);
+        // 🍈 FRUIT CLUSTERS (realistic distribution)
+        // ======================================================
+        const fertility = params.fertility ?? 0.5;
+        const moisture = params.moisture ?? 0.5;
+        const fruitChance = Scalar.Clamp(0.2 + 0.5 * fertility + 0.4 * moisture + Math.random() * 0.2, 0, 1);
 
-const fruitCluster = new TransformNode('fruitCluster', scene);
-fruitCluster.parent = crown;
-fruitCluster.position.y = -0.35;
-fruitCluster.scaling.setAll(0);
+        const fruitCluster = new TransformNode('fruitCluster', scene);
+        fruitCluster.parent = crown;
+        fruitCluster.position.y = -0.35;
+        fruitCluster.scaling.setAll(0);
 
-if (Math.random() < fruitChance) {
-    const fruitMat = W.fruits[Math.floor(Math.random() * W.fruits.length)];
-    const fruitBaseMesh = emitFruit(scene, fruitMat, 0.12);
+        if (Math.random() < fruitChance) {
+            const fruitMat = W.fruits[Math.floor(Math.random() * W.fruits.length)];
+            const fruitBaseMesh = emitFruit(scene, fruitMat, 0.12);
 
-    const fruitSPS = new SolidParticleSystem('fruitSPS', scene, {
-        updatable: false,
-        useModelMaterial: true
-    });
+            const fruitSPS = new SolidParticleSystem('fruitSPS', scene, {
+                updatable: false,
+                useModelMaterial: true
+            });
 
-    const lowAlt = altitude < 0.45;
-    const type = lowAlt ? 'coconut' : 'date';
+            const lowAlt = altitude < 0.45;
+            const type = lowAlt ? 'coconut' : 'date';
 
-   const baseCount = type === 'coconut'
-    ? 6 + Math.floor(Math.random() * 4)
-    : 30 + Math.floor(Math.random() * 25);
-const count = window.scaleQuality(baseCount, 0.25);
+            const baseCount = type === 'coconut' ? 6 + Math.floor(Math.random() * 4) : 30 + Math.floor(Math.random() * 25);
+            const count = window.scaleQuality(baseCount, 0.25);
 
-    const clusterCount = type === 'coconut' ? 1 : 2 + Math.floor(Math.random() * 2);
+            const clusterCount = type === 'coconut' ? 1 : 2 + Math.floor(Math.random() * 2);
 
-    for (let c = 0; c < clusterCount; c++) {
-        const baseAng = Math.random() * Math.PI * 2;
-        const hangDir = new Vector3(Math.cos(baseAng), -0.6, Math.sin(baseAng)).normalize();
+            for (let c = 0; c < clusterCount; c++) {
+                const baseAng = Math.random() * Math.PI * 2;
+                const hangDir = new Vector3(Math.cos(baseAng), -0.6, Math.sin(baseAng)).normalize();
 
-        fruitSPS.addShape(fruitBaseMesh, count, {
-            positionFunction: (p) => {
-                const t = Math.random();
-                const radius = type === 'coconut' ? 0.25 + Math.random() * 0.1 : 0.4 + Math.random() * 0.15;
-                const offset = hangDir.scale(radius * t);
-                p.position.copyFrom(offset);
-                p.position.y -= 0.1 + Math.random() * 0.3;
+                fruitSPS.addShape(fruitBaseMesh, count, {
+                    positionFunction: (p) => {
+                        const t = Math.random();
+                        const radius = type === 'coconut' ? 0.25 + Math.random() * 0.1 : 0.4 + Math.random() * 0.15;
+                        const offset = hangDir.scale(radius * t);
+                        p.position.copyFrom(offset);
+                        p.position.y -= 0.1 + Math.random() * 0.3;
 
-                const tilt = (Math.random() - 0.5) * 0.6;
-                p.rotation.set(tilt, baseAng + Math.random() * 0.8, (Math.random() - 0.5) * 0.3);
-               p.scaling.setAll(
-    window.scaleSize(
-        type === 'coconut'
-            ? 0.9 + Math.random() * 0.4
-            : 0.5 + Math.random() * 0.25
-    )
-);
+                        const tilt = (Math.random() - 0.5) * 0.6;
+                        p.rotation.set(tilt, baseAng + Math.random() * 0.8, (Math.random() - 0.5) * 0.3);
+                        p.scaling.setAll(window.scaleSize(type === 'coconut' ? 0.9 + Math.random() * 0.4 : 0.5 + Math.random() * 0.25));
 
-
-                // warm tropical colors
-                const base = type === 'coconut'
-                    ? Color3.FromHexString(COLORS['fadedOrange'])
-                    : Color3.FromHexString(COLORS['goldenYellow']);
-                const cJ = 0.1;
-                const col = new Color4(
-                    Scalar.Clamp(base.r + (Math.random() - 0.5) * cJ, 0, 1),
-                    Scalar.Clamp(base.g + (Math.random() - 0.5) * cJ, 0, 1),
-                    Scalar.Clamp(base.b + (Math.random() - 0.5) * cJ, 0, 1),
-                    1
-                );
-                p.color = col;
+                        // warm tropical colors
+                        const base = type === 'coconut' ? Color3.FromHexString(COLORS['fadedOrange']) : Color3.FromHexString(COLORS['goldenYellow']);
+                        const cJ = 0.1;
+                        const col = new Color4(Scalar.Clamp(base.r + (Math.random() - 0.5) * cJ, 0, 1), Scalar.Clamp(base.g + (Math.random() - 0.5) * cJ, 0, 1), Scalar.Clamp(base.b + (Math.random() - 0.5) * cJ, 0, 1), 1);
+                        p.color = col;
+                    }
+                });
             }
-        });
-    }
 
-    const fruitMesh = this.add(fruitSPS.buildMesh(), fruitMat);
-    fruitMesh.material.useVertexColor = true;
-    fruitMesh.parent = fruitCluster;
-    fruitBaseMesh.dispose();
+            const fruitMesh = this.add(fruitSPS.buildMesh(), fruitMat);
+            fruitMesh.material.useVertexColor = true;
+            fruitMesh.parent = fruitCluster;
+            fruitBaseMesh.dispose();
 
-    A.popScale(fruitCluster, 25, 400, 'easeOutElastic');
-}
-
+            A.popScale(fruitCluster, 25, 400, 'easeOutElastic');
+        }
 
         // ======================================================
         // 🎬 ANIMATION (1 s, parallel)

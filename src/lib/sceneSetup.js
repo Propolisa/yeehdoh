@@ -2,27 +2,23 @@
 // https://forum.babylonjs.com/t/simple-stylized-water-shader/17672/8 phaselock
 // https://forum.babylonjs.com/t/simple-stylized-water-shader/17672/9 nevergrind
 
-import { COLORS } from '@/lib/colors';
+import { Water } from '@/lib/biome/Water.js';
 import {
     Animation,
     ArcRotateCamera,
     Color3,
     Color4,
-    Constants,
     CubicEase,
     DirectionalLight,
     EasingFunction,
-    Effect,
     HemisphericLight,
     MaterialPluginBase,
     Matrix,
     Mesh,
     PBRMaterial,
     Ray,
-    RenderTargetTexture,
     Scalar,
     Scene,
-    ShaderMaterial,
     ShadowGenerator,
     StandardMaterial,
     Tools,
@@ -32,6 +28,7 @@ import {
     VertexBuffer,
     VertexData
 } from '@babylonjs/core';
+import { COLORS } from './colors.js';
 import { makePalmFrond } from './geometry/emitters';
 import * as Plants from './plants/classes';
 
@@ -422,6 +419,7 @@ function setupTrees(scene) {
 
 export var createScene = function (engine, canvas) {
     const scene = new Scene(engine);
+
     window.GLOBAL_CACHE.scene = scene;
     scene.environmentIntensity = -5;
     setupWindShader(scene);
@@ -731,249 +729,247 @@ export var createScene = function (engine, canvas) {
 
     // Water plane
 
-    // Create water as circular mesh
-    const water = createCircularWater('water', 1024, 256, 256, scene);
-    water.position.y = 0;
+    //     // Create water as circular mesh
+    //     const water = createCircularWater('water', 1024, 256, 256, scene);
+    //     water.position.y = 0;
 
-    // Custom shaders
-    Effect.ShadersStore['customVertexShader'] = `
-        precision highp float;
-        attribute vec3 position;
-        attribute vec2 uv;
-        uniform mat4 worldViewProjection;
-        uniform float time;
-        out float newY;
-        varying vec3 vPosition;
-        varying vec4 vClipSpace;
+    //     // Custom shaders
+    //     Effect.ShadersStore['customVertexShader'] = `
+    //         precision highp float;
+    //         attribute vec3 position;
+    //         attribute vec2 uv;
+    //         uniform mat4 worldViewProjection;
+    //         uniform float time;
+    //         out float newY;
+    //         varying vec3 vPosition;
+    //         varying vec4 vClipSpace;
 
-        void main(void) {
-            // === Water surface waves ===
-float scale = 6.0;       // wavelength (~6 units)
-float amp   = 0.07;      // amplitude (~7 cm visually)
-float speed = 1.2;       // time multiplier
+    //         void main(void) {
+    //             // === Water surface waves ===
+    // float scale = 6.0;       // wavelength (~6 units)
+    // float amp   = 0.07;      // amplitude (~7 cm visually)
+    // float speed = 1.2;       // time multiplier
 
-// combine 2 angled waves for variety
-float wave1 = sin((position.x + position.z) / scale + time * speed);
-float wave2 = sin((position.x - position.z) / (scale * 1.3) + time * speed * 1.1);
-newY = (wave1 + wave2) * 0.5 * amp;
+    // // combine 2 angled waves for variety
+    // float wave1 = sin((position.x + position.z) / scale + time * speed);
+    // float wave2 = sin((position.x - position.z) / (scale * 1.3) + time * speed * 1.1);
+    // newY = (wave1 + wave2) * 0.5 * amp;
 
-vec3 newPositionM = vec3(position.x, newY, position.z);
-gl_Position = worldViewProjection * vec4(newPositionM, 1.0);
-            vPosition = position;
-            vClipSpace = gl_Position;
-        }
-    `;
+    // vec3 newPositionM = vec3(position.x, newY, position.z);
+    // gl_Position = worldViewProjection * vec4(newPositionM, 1.0);
+    //             vPosition = position;
+    //             vClipSpace = gl_Position;
+    //         }
+    //     `;
 
-    Effect.ShadersStore['customFragmentShader'] = `
-        precision highp float;
-        varying vec3 vPosition;
-        varying vec4 vClipSpace;
-        uniform sampler2D depthTex;
-        uniform sampler2D refractionSampler;
-        uniform float camMinZ;
-        uniform float camMaxZ;
-        uniform float maxDepth;
-        uniform vec4 wFoamColor;
-        uniform vec4 wDeepColor;
-        uniform vec4 wShallowColor;
-        uniform float time;
-        uniform float wNoiseScale;
-        uniform float wNoiseOffset;
-        uniform float fNoiseScale;
-        in float newY;
+    //     Effect.ShadersStore['customFragmentShader'] = `
+    //         precision highp float;
+    //         varying vec3 vPosition;
+    //         varying vec4 vClipSpace;
+    //         uniform sampler2D depthTex;
+    //         uniform sampler2D refractionSampler;
+    //         uniform float camMinZ;
+    //         uniform float camMaxZ;
+    //         uniform float maxDepth;
+    //         uniform vec4 wFoamColor;
+    //         uniform vec4 wDeepColor;
+    //         uniform vec4 wShallowColor;
+    //         uniform float time;
+    //         uniform float wNoiseScale;
+    //         uniform float wNoiseOffset;
+    //         uniform float fNoiseScale;
+    //         in float newY;
 
-        float mod289(float x){return x - floor(x * (1.0 / 289.0)) * 289.0;}
-        vec4 mod289(vec4 x){return x - floor(x * (1.0 / 289.0)) * 289.0;}
-        vec4 perm(vec4 x){return mod289(((x * 34.0) + 1.0) * x);}
+    //         float mod289(float x){return x - floor(x * (1.0 / 289.0)) * 289.0;}
+    //         vec4 mod289(vec4 x){return x - floor(x * (1.0 / 289.0)) * 289.0;}
+    //         vec4 perm(vec4 x){return mod289(((x * 34.0) + 1.0) * x);}
 
-        float noise(vec3 p){
-            vec3 a = floor(p);
-            vec3 d = p - a;
-            d = d * d * (3.0 - 2.0 * d);
-            vec4 b = a.xxyy + vec4(0.0, 1.0, 0.0, 1.0);
-            vec4 k1 = perm(b.xyxy);
-            vec4 k2 = perm(k1.xyxy + b.zzww);
-            vec4 c = k2 + a.zzzz;
-            vec4 k3 = perm(c);
-            vec4 k4 = perm(c + 1.0);
-            vec4 o1 = fract(k3 * (1.0 / 41.0));
-            vec4 o2 = fract(k4 * (1.0 / 41.0));
-            vec4 o3 = o2 * d.z + o1 * (1.0 - d.z);
-            vec2 o4 = o3.yw * d.x + o3.xz * (1.0 - d.x);
-            return o4.y * d.y + o4.x * (1.0 - d.y);
-        }
+    //         float noise(vec3 p){
+    //             vec3 a = floor(p);
+    //             vec3 d = p - a;
+    //             d = d * d * (3.0 - 2.0 * d);
+    //             vec4 b = a.xxyy + vec4(0.0, 1.0, 0.0, 1.0);
+    //             vec4 k1 = perm(b.xyxy);
+    //             vec4 k2 = perm(k1.xyxy + b.zzww);
+    //             vec4 c = k2 + a.zzzz;
+    //             vec4 k3 = perm(c);
+    //             vec4 k4 = perm(c + 1.0);
+    //             vec4 o1 = fract(k3 * (1.0 / 41.0));
+    //             vec4 o2 = fract(k4 * (1.0 / 41.0));
+    //             vec4 o3 = o2 * d.z + o1 * (1.0 - d.z);
+    //             vec2 o4 = o3.yw * d.x + o3.xz * (1.0 - d.x);
+    //             return o4.y * d.y + o4.x * (1.0 - d.y);
+    //         }
 
-        void main(void) {
-            float waveNoise = noise(vec3(0., time, 0.) + vPosition * wNoiseScale) * wNoiseOffset;
-            vec2 ndc = (vClipSpace.xy / vClipSpace.w) / 2.0 + 0.5;
-            float depthOfObjectBehindWater = texture2D(depthTex, vec2(ndc.x, ndc.y) + waveNoise).r;
-            float linearWaterDepth = (vClipSpace.z + camMinZ) / (camMaxZ + camMinZ);
-            float waterDepth = camMaxZ * (depthOfObjectBehindWater - linearWaterDepth);
-            float wdepth = clamp((waterDepth / maxDepth), 0.0, 1.0);
+    //         void main(void) {
+    //             float waveNoise = noise(vec3(0., time, 0.) + vPosition * wNoiseScale) * wNoiseOffset;
+    //             vec2 ndc = (vClipSpace.xy / vClipSpace.w) / 2.0 + 0.5;
+    //             float depthOfObjectBehindWater = texture2D(depthTex, vec2(ndc.x, ndc.y) + waveNoise).r;
+    //             float linearWaterDepth = (vClipSpace.z + camMinZ) / (camMaxZ + camMinZ);
+    //             float waterDepth = camMaxZ * (depthOfObjectBehindWater - linearWaterDepth);
+    //             float wdepth = clamp((waterDepth / maxDepth), 0.0, 1.0);
 
-            // soft fade at the shoreline
-            float fadeDistance = 0.15;
-            float shoreFade = smoothstep(0.0, fadeDistance, wdepth + newY * 0.5);
+    //             // soft fade at the shoreline
+    //             float fadeDistance = 0.15;
+    //             float shoreFade = smoothstep(0.0, fadeDistance, wdepth + newY * 0.5);
 
-            vec4 refractiveColor = texture2D(refractionSampler, vec2(ndc.x, ndc.y) + waveNoise + newY);
+    //             vec4 refractiveColor = texture2D(refractionSampler, vec2(ndc.x, ndc.y) + waveNoise + newY);
 
-            // foam
-            float foam = 1.0 - smoothstep(0.1, 0.2, wdepth);
-            float foamEffect = smoothstep(0.1, 0.2, noise(vec3(0., time, 0.) + vPosition * fNoiseScale * 0.3) * foam);
-            vec4 foamColor = vec4(foamEffect) * 0.5;
+    //             // foam
+    //             float foam = 1.0 - smoothstep(0.1, 0.2, wdepth);
+    //             float foamEffect = smoothstep(0.1, 0.2, noise(vec3(0., time, 0.) + vPosition * fNoiseScale * 0.3) * foam);
+    //             vec4 foamColor = vec4(foamEffect) * 0.5;
 
-            // color blending
-          // === Depth-based underwater fade ===
-            float visibility = exp(-2.5 * wdepth);  
-            // exponential fade with adjustable falloff
-            // lower uWaterFalloff → clearer water
-            // higher uWaterFalloff → murkier / faster fade
+    //             // color blending
+    //           // === Depth-based underwater fade ===
+    //             float visibility = exp(-2.5 * wdepth);
+    //             // exponential fade with adjustable falloff
+    //             // lower uWaterFalloff → clearer water
+    //             // higher uWaterFalloff → murkier / faster fade
 
-            
-// Blend the refraction (terrain) with the deep color
-// When deep, refraction fades out and deep color dominates
-vec3 fogged = mix(wDeepColor.rgb, refractiveColor.rgb, visibility);
+    // // Blend the refraction (terrain) with the deep color
+    // // When deep, refraction fades out and deep color dominates
+    // vec3 fogged = mix(wDeepColor.rgb, refractiveColor.rgb, visibility);
 
-// Combine shallow-to-deep blend for overall hue
-vec3 finalRGB = mix(wShallowColor.rgb, fogged, wdepth);
+    // // Combine shallow-to-deep blend for overall hue
+    // vec3 finalRGB = mix(wShallowColor.rgb, fogged, wdepth);
 
-// Foam and shoreline as before
-finalRGB = mix(wFoamColor.rgb, finalRGB, 1.0 - foamColor.r);
+    // // Foam and shoreline as before
+    // finalRGB = mix(wFoamColor.rgb, finalRGB, 1.0 - foamColor.r);
 
-// --- Keep alpha roughly constant (no transparency fade) ---
-float finalAlpha = .9; // you can tweak to 0.6–1.0 depending on look
+    // // --- Keep alpha roughly constant (no transparency fade) ---
+    // float finalAlpha = .9; // you can tweak to 0.6–1.0 depending on look
 
-gl_FragColor = vec4(finalRGB, finalAlpha);
-        }
-    `;
-    Effect.ShadersStore['customFragmentShader'] = `
-precision highp float;
-varying vec3 vPosition;
-varying vec4 vClipSpace;
+    // gl_FragColor = vec4(finalRGB, finalAlpha);
+    //         }
+    //     `;
+    //     Effect.ShadersStore['customFragmentShader'] = `
+    // precision highp float;
+    // varying vec3 vPosition;
+    // varying vec4 vClipSpace;
 
-uniform sampler2D depthTex;
-uniform sampler2D refractionSampler;
-uniform float camMinZ;
-uniform float camMaxZ;
-uniform float maxDepth;
+    // uniform sampler2D depthTex;
+    // uniform sampler2D refractionSampler;
+    // uniform float camMinZ;
+    // uniform float camMaxZ;
+    // uniform float maxDepth;
 
-uniform vec4 wFoamColor;
-uniform vec4 wDeepColor;
-uniform vec4 wShallowColor;
+    // uniform vec4 wFoamColor;
+    // uniform vec4 wDeepColor;
+    // uniform vec4 wShallowColor;
 
-uniform float time;
-uniform float wNoiseScale;
-uniform float wNoiseOffset;
-uniform float fNoiseScale;
-in float newY;
+    // uniform float time;
+    // uniform float wNoiseScale;
+    // uniform float wNoiseOffset;
+    // uniform float fNoiseScale;
+    // in float newY;
 
-float mod289(float x){return x - floor(x * (1.0 / 289.0)) * 289.0;}
-vec4 mod289(vec4 x){return x - floor(x * (1.0 / 289.0)) * 289.0;}
-vec4 perm(vec4 x){return mod289(((x * 34.0) + 1.0) * x);}
-float noise(vec3 p){
-  vec3 a = floor(p);
-  vec3 d = p - a;
-  d = d * d * (3.0 - 2.0 * d);
-  vec4 b = a.xxyy + vec4(0.0, 1.0, 0.0, 1.0);
-  vec4 k1 = perm(b.xyxy);
-  vec4 k2 = perm(k1.xyxy + b.zzww);
-  vec4 c = k2 + a.zzzz;
-  vec4 k3 = perm(c);
-  vec4 k4 = perm(c + 1.0);
-  vec4 o1 = fract(k3 * (1.0 / 41.0));
-  vec4 o2 = fract(k4 * (1.0 / 41.0));
-  vec4 o3 = o2 * d.z + o1 * (1.0 - d.z);
-  vec2 o4 = o3.yw * d.x + o3.xz * (1.0 - d.x);
-  return o4.y * d.y + o4.x * (1.0 - d.y);
-}
+    // float mod289(float x){return x - floor(x * (1.0 / 289.0)) * 289.0;}
+    // vec4 mod289(vec4 x){return x - floor(x * (1.0 / 289.0)) * 289.0;}
+    // vec4 perm(vec4 x){return mod289(((x * 34.0) + 1.0) * x);}
+    // float noise(vec3 p){
+    //   vec3 a = floor(p);
+    //   vec3 d = p - a;
+    //   d = d * d * (3.0 - 2.0 * d);
+    //   vec4 b = a.xxyy + vec4(0.0, 1.0, 0.0, 1.0);
+    //   vec4 k1 = perm(b.xyxy);
+    //   vec4 k2 = perm(k1.xyxy + b.zzww);
+    //   vec4 c = k2 + a.zzzz;
+    //   vec4 k3 = perm(c);
+    //   vec4 k4 = perm(c + 1.0);
+    //   vec4 o1 = fract(k3 * (1.0 / 41.0));
+    //   vec4 o2 = fract(k4 * (1.0 / 41.0));
+    //   vec4 o3 = o2 * d.z + o1 * (1.0 - d.z);
+    //   vec2 o4 = o3.yw * d.x + o3.xz * (1.0 - d.x);
+    //   return o4.y * d.y + o4.x * (1.0 - d.y);
+    // }
 
-void main(void) {
-  float waveNoise = noise(vec3(0., time, 0.) + vPosition * wNoiseScale) * wNoiseOffset;
-  vec2 ndc = (vClipSpace.xy / vClipSpace.w) / 2.0 + 0.5;
+    // void main(void) {
+    //   float waveNoise = noise(vec3(0., time, 0.) + vPosition * wNoiseScale) * wNoiseOffset;
+    //   vec2 ndc = (vClipSpace.xy / vClipSpace.w) / 2.0 + 0.5;
 
-  float depthBehind = texture2D(depthTex, ndc + waveNoise).r;
-  float linearWaterDepth = (vClipSpace.z + camMinZ) / (camMaxZ + camMinZ);
-  float waterDepth = camMaxZ * (depthBehind - linearWaterDepth);
-  float wdepth = clamp((waterDepth / maxDepth), 0.0, 1.0);
+    //   float depthBehind = texture2D(depthTex, ndc + waveNoise).r;
+    //   float linearWaterDepth = (vClipSpace.z + camMinZ) / (camMaxZ + camMinZ);
+    //   float waterDepth = camMaxZ * (depthBehind - linearWaterDepth);
+    //   float wdepth = clamp((waterDepth / maxDepth), 0.0, 1.0);
 
-  bool isUnder = !gl_FrontFacing;
+    //   bool isUnder = !gl_FrontFacing;
 
-  vec2 refrOffset = waveNoise * vec2((isUnder ? -6.0 : 6.0), (isUnder ? -4.0 : 4.0));
-vec4 refrColor = texture(refractionSampler, ndc + refrOffset + vec2(newY * 0.5));
+    //   vec2 refrOffset = waveNoise * vec2((isUnder ? -6.0 : 6.0), (isUnder ? -4.0 : 4.0));
+    // vec4 refrColor = texture(refractionSampler, ndc + refrOffset + vec2(newY * 0.5));
 
+    //   if (!isUnder) {
+    //     // Above surface: brighter and foamy
+    //     float visibility = exp(-3.5 * wdepth);
+    //     vec3 fogged = mix(wDeepColor.rgb, refrColor.rgb, visibility);
+    //     vec3 color = mix(wShallowColor.rgb, fogged, wdepth);
+    //     float foam = 1.0 - smoothstep(0.05, 0.2, wdepth);
+    //     float foamNoise = noise(vec3(vPosition.xz * fNoiseScale, time * 0.7));
+    //     color = mix(color, wFoamColor.rgb, foam * foamNoise * 0.5);
+    //     gl_FragColor = vec4(color, 0.9);
+    //   } else {
+    //     // Below surface: refracted and bluish but transparent
+    //     float scatter = exp(-abs(vPosition.y) * 0.25);
+    //     vec3 base = mix(wDeepColor.rgb * 0.8, wShallowColor.rgb * 1.2, scatter);
+    //     // Mix refracted world with underwater haze
+    //     vec3 color = mix(base, refrColor.rgb, 0.7);
+    //     gl_FragColor = vec4(color, 0.7);
+    //   }
+    // }
+    // `;
 
-  if (!isUnder) {
-    // Above surface: brighter and foamy
-    float visibility = exp(-3.5 * wdepth);
-    vec3 fogged = mix(wDeepColor.rgb, refrColor.rgb, visibility);
-    vec3 color = mix(wShallowColor.rgb, fogged, wdepth);
-    float foam = 1.0 - smoothstep(0.05, 0.2, wdepth);
-    float foamNoise = noise(vec3(vPosition.xz * fNoiseScale, time * 0.7));
-    color = mix(color, wFoamColor.rgb, foam * foamNoise * 0.5);
-    gl_FragColor = vec4(color, 0.9);
-  } else {
-    // Below surface: refracted and bluish but transparent
-    float scatter = exp(-abs(vPosition.y) * 0.25);
-    vec3 base = mix(wDeepColor.rgb * 0.8, wShallowColor.rgb * 1.2, scatter);
-    // Mix refracted world with underwater haze
-    vec3 color = mix(base, refrColor.rgb, 0.7);
-    gl_FragColor = vec4(color, 0.7);
-  }
-}
-`;
+    //     // Shader material
+    //     var shaderMaterial = new ShaderMaterial(
+    //         'shader',
+    //         scene,
+    //         { vertex: 'custom', fragment: 'custom' },
+    //         {
+    //             attributes: ['position', 'normal', 'uv'],
+    //             uniforms: ['world', 'worldView', 'worldViewProjection', 'view', 'projection']
+    //         }
+    //     );
 
-    // Shader material
-    var shaderMaterial = new ShaderMaterial(
-        'shader',
-        scene,
-        { vertex: 'custom', fragment: 'custom' },
-        {
-            attributes: ['position', 'normal', 'uv'],
-            uniforms: ['world', 'worldView', 'worldViewProjection', 'view', 'projection']
-        }
-    );
+    //     shaderMaterial.backFaceCulling = false;
 
-    shaderMaterial.backFaceCulling = false;
+    //     // Depth renderer
+    //     var depthRenderer = scene.enableDepthRenderer(scene.activeCamera, false);
+    //     var depthTex = depthRenderer.getDepthMap();
 
-    setupIslandFog(scene, mesh, 400);
-    // Depth renderer
-    var depthRenderer = scene.enableDepthRenderer(scene.activeCamera, false);
-    var depthTex = depthRenderer.getDepthMap();
+    //     // Refraction RTT
+    //     var _refractionRTT = new RenderTargetTexture('water_refraction', { width: 256, height: 256 }, scene, false, true);
+    //     _refractionRTT.wrapU = Constants.TEXTURE_MIRROR_ADDRESSMODE;
+    //     _refractionRTT.wrapV = Constants.TEXTURE_MIRROR_ADDRESSMODE;
+    //     _refractionRTT.ignoreCameraViewport = true;
+    //     _refractionRTT.refreshRate = 1;
+    //     _refractionRTT.renderList = depthTex.renderList = [mesh];
 
-    // Refraction RTT
-    var _refractionRTT = new RenderTargetTexture('water_refraction', { width: 256, height: 256 }, scene, false, true);
-    _refractionRTT.wrapU = Constants.TEXTURE_MIRROR_ADDRESSMODE;
-    _refractionRTT.wrapV = Constants.TEXTURE_MIRROR_ADDRESSMODE;
-    _refractionRTT.ignoreCameraViewport = true;
-    _refractionRTT.refreshRate = 1;
-    _refractionRTT.renderList = depthTex.renderList = [mesh];
+    //     scene.customRenderTargets.push(_refractionRTT);
 
-    scene.customRenderTargets.push(_refractionRTT);
+    //     // Shader parameters
+    //     shaderMaterial.setTexture('depthTex', depthTex);
+    //     shaderMaterial.setTexture('refractionSampler', _refractionRTT);
+    //     shaderMaterial.setFloat('camMinZ', scene.activeCamera.minZ);
+    //     shaderMaterial.setFloat('camMaxZ', scene.activeCamera.maxZ);
+    //     shaderMaterial.setFloat('time', 0);
+    //     shaderMaterial.setFloat('wNoiseScale', 0.25); // much lower frequency
+    //     shaderMaterial.setFloat('wNoiseOffset', 0.02); // slightly stronger effect
+    //     shaderMaterial.setFloat('fNoiseScale', 1.5); // gentler foam noise
+    //     shaderMaterial.setFloat('maxDepth', 5.0);
+    //     shaderMaterial.setVector4('wDeepColor', new Vector4(0.0, 0.3, 0.5, 0.8));
+    //     shaderMaterial.setVector4('wShallowColor', new Vector4(0.0, 0.6, 0.8, 0.8));
+    //     shaderMaterial.setVector4('wFoamColor', new Vector4(1, 1, 1, 1));
+    //     shaderMaterial.alpha = 0.5;
 
-    // Shader parameters
-    shaderMaterial.setTexture('depthTex', depthTex);
-    shaderMaterial.setTexture('refractionSampler', _refractionRTT);
-    shaderMaterial.setFloat('camMinZ', scene.activeCamera.minZ);
-    shaderMaterial.setFloat('camMaxZ', scene.activeCamera.maxZ);
-    shaderMaterial.setFloat('time', 0);
-    shaderMaterial.setFloat('wNoiseScale', 0.25); // much lower frequency
-    shaderMaterial.setFloat('wNoiseOffset', 0.02); // slightly stronger effect
-    shaderMaterial.setFloat('fNoiseScale', 1.5); // gentler foam noise
-    shaderMaterial.setFloat('maxDepth', 5.0);
-    shaderMaterial.setVector4('wDeepColor', new Vector4(0.0, 0.3, 0.5, 0.8));
-    shaderMaterial.setVector4('wShallowColor', new Vector4(0.0, 0.6, 0.8, 0.8));
-    shaderMaterial.setVector4('wFoamColor', new Vector4(1, 1, 1, 1));
-    shaderMaterial.alpha = 0.5;
+    //     // Animate
+    //     var time = 0;
+    //     scene.registerBeforeRender(function () {
+    //         time += engine.getDeltaTime() * 0.001;
+    //         shaderMaterial.setFloat('time', time);
+    //     });
 
-    // Animate
-    var time = 0;
-    scene.registerBeforeRender(function () {
-        time += engine.getDeltaTime() * 0.001;
-        shaderMaterial.setFloat('time', time);
-    });
-
-    water.material = shaderMaterial;
+    //     water.material = shaderMaterial;
     setupTrees(scene);
+    setupIslandFog(scene, mesh, 400);
 
     // Build 3 messy variants once and keep them hidden for reuse
 
@@ -1086,6 +1082,7 @@ vec4 refrColor = texture(refractionSampler, ndc + refrOffset + vec2(newY * 0.5))
         p.group.scaling.setAll(s);
     }
 
+    new Water(scene);
     // 🧠 SPACEBAR for desktop
     window.addEventListener('keydown', (ev) => {
         if (ev.code === 'Space') addRandomPlant();
@@ -1143,12 +1140,12 @@ vec4 refrColor = texture(refractionSampler, ndc + refrOffset + vec2(newY * 0.5))
     };
 
     setupFishShader(scene);
-    const fishies = new FishSystemCute(scene, water, mesh, {
-        numFish: 80,
-        noSwimRadius: 32,
-        depthRange: [1.0, 3.8],
-        bounds: 60
-    });
+    // const fishies = new FishSystemCute(scene, water, mesh, {
+    //     numFish: 80,
+    //     noSwimRadius: 32,
+    //     depthRange: [1.0, 3.8],
+    //     bounds: 60
+    // });
 
     return scene;
 };

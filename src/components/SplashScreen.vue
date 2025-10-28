@@ -6,7 +6,7 @@
 </template>
 
 <script setup>
-import { playYeehDohThemeHuman } from '@/lib/theme';
+import { playYeehDohThemeHuman } from '../lib/theme.js';
 import * as Tone from 'tone';
 import { onMounted, ref } from 'vue';
 

@@ -1,7 +1,7 @@
-import { StaticEntity } from '@/lib/entity';
-import { emitRockIco } from '@/lib/geometry/emitters';
-import { Animate } from '@/lib/plants/classes';
 import { Color4, Scalar, Vector3 } from '@babylonjs/core';
+import { StaticEntity } from '../entity.js';
+import { emitRockIco } from '../geometry/emitters.js';
+import { Animate } from '../plants/classes.js';
 export class Rock extends StaticEntity {
     constructor(scene, pos, params = {}) {
         super(scene, pos, params);
