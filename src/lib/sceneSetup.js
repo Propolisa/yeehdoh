@@ -16,6 +16,7 @@ import {
     Matrix,
     Mesh,
     PBRMaterial,
+    PointerEventTypes,
     Ray,
     Scalar,
     Scene,
@@ -1089,56 +1090,61 @@ export var createScene = function (engine, canvas) {
         if (ev.code === 'Space') addRandomPlant();
     });
 
-    /// 🪴 Click-to-plant on visible island under cursor (even through meshes)
-    scene.onPointerDown = function (evt, pickInfo) {
-        if (!pickInfo) return;
+  scene.onPointerObservable.add((pointerInfo) => {
+    if (pointerInfo.type !== PointerEventTypes.POINTERTAP) return;
 
-        // Build a ray from the active camera through the pointer
-        const pickRay = scene.createPickingRay(evt.clientX, evt.clientY, Matrix.Identity(), camera);
+    const evt = pointerInfo.event;
 
-        // Raycast against only the island mesh — we ignore foliage, water, etc.
-        const groundPick = scene.pickWithRay(pickRay, (m) => m.name === 'island');
+    // === Click-to-plant only on tap ===
+    const pickRay = scene.createPickingRay(evt.clientX, evt.clientY, Matrix.Identity(), camera);
+    const groundPick = scene.pickWithRay(pickRay, (m) => m.name === "island");
 
-        if (groundPick?.hit) {
-            const pos = groundPick.pickedPoint.clone();
-            const normal = groundPick.getNormal(true, true);
+    if (!groundPick?.hit) return;
 
-            // sanity check: must be upward-facing ground
-            if (normal?.y < 0.5) return;
+    const pos = groundPick.pickedPoint.clone();
+    const normal = groundPick.getNormal(true, true);
 
-            // compute fertility context at that point
-            function simpleNoise2D(x, z) {
-                return Math.sin(x * 0.11 + z * 0.07) + Math.sin(x * 0.05 - z * 0.13);
-            }
-            const n = simpleNoise2D(pos.x, pos.z);
-            const altitude = pos.y;
-            const food = Scalar.Clamp((0.6 + n * 0.4) * Scalar.SmoothStep(0.1, 1.5, 2.2 - altitude), 0, 1);
-            const ctx = { altitude, food, moisture: (n + 2) / 4, fertility: food };
+    // only upward-facing surface
+    if (normal?.y < 0.5) return;
 
-            const r = Math.random();
-            let p;
+    // compute fertility context
+    function simpleNoise2D(x, z) {
+        return Math.sin(x * 0.11 + z * 0.07) + Math.sin(x * 0.05 - z * 0.13);
+    }
+    const n = simpleNoise2D(pos.x, pos.z);
+    const altitude = pos.y;
+    const food = Scalar.Clamp(
+        (0.6 + n * 0.4) * Scalar.SmoothStep(0.1, 1.5, 2.2 - altitude),
+        0,
+        1
+    );
+    const ctx = { altitude, food, moisture: (n + 2) / 4, fertility: food };
 
-            if (ctx.food < 0.35) {
-                if (r < 0.6) p = new Plants.Palm(scene, pos, ctx);
-                else p = new Plants.Bush(scene, pos, ctx);
-            } else if (ctx.food < 0.7) {
-                if (r < 0.3) p = new Plants.Palm(scene, pos, ctx);
-                else if (r < 0.75) p = new Plants.Tree(scene, pos, ctx);
-                else p = new Plants.Bush(scene, pos, ctx);
-            } else {
-                if (r < 0.4) p = new Plants.Tree(scene, pos, ctx);
-                else if (r < 0.7) p = new Plants.Palm(scene, pos, ctx);
-                else if (r < 0.9) p = new Plants.FlowerCluster(scene, pos, ctx);
-                else p = new Plants.Flower(scene, pos, ctx);
-            }
+    // random plant selection
+    const r = Math.random();
+    let p;
 
-            // smooth appearance
-            const s = 3.5 + ctx.food * 3.5;
-            p.group.scaling.setAll(0);
-            Plants.Animate.popScale(p.group, 35);
-            p.group.scaling.setAll(s);
-        }
-    };
+    if (ctx.food < 0.35) {
+        if (r < 0.6) p = new Plants.Palm(scene, pos, ctx);
+        else p = new Plants.Bush(scene, pos, ctx);
+    } else if (ctx.food < 0.7) {
+        if (r < 0.3) p = new Plants.Palm(scene, pos, ctx);
+        else if (r < 0.75) p = new Plants.Tree(scene, pos, ctx);
+        else p = new Plants.Bush(scene, pos, ctx);
+    } else {
+        if (r < 0.4) p = new Plants.Tree(scene, pos, ctx);
+        else if (r < 0.7) p = new Plants.Palm(scene, pos, ctx);
+        else if (r < 0.9) p = new Plants.FlowerCluster(scene, pos, ctx);
+        else p = new Plants.Flower(scene, pos, ctx);
+    }
+
+    // animate appearance
+    const s = 3.5 + ctx.food * 3.5;
+    p.group.scaling.setAll(0);
+    Plants.Animate.popScale(p.group, 35);
+    p.group.scaling.setAll(s);
+});
+
 
     setupFishShader(scene);
     // const fishies = new FishSystemCute(scene, water, mesh, {

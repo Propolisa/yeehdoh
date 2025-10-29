@@ -35,8 +35,9 @@ import '@babylonjs/inspector';
 import '@babylonjs/loaders/glTF';
 import { setupDebugTrigger } from '../../lib/babylon_functions.js';
 import { createScene } from '../../lib/sceneSetup.js';
+import { WINDOW_CONTEXT } from '@/lib/helpers.js';
 
-const showSplash = ref(false);
+const showSplash = ref(!WINDOW_CONTEXT.is_dev );
 setTimeout(() => (showSplash.value = false), 5000);
 const canvas = ref(null);
 const showCredits = ref(false);

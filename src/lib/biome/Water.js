@@ -1,3 +1,4 @@
+import { WINDOW_CONTEXT } from '@/lib/helpers';
 import { Constants, Effect, Mesh, MirrorTexture, Plane, RenderTargetTexture, ShaderMaterial, Vector4, VertexData } from '@babylonjs/core';
 import GUI from 'lil-gui';
 /**
@@ -28,6 +29,7 @@ export class Water {
         this.refractionRTT = new RenderTargetTexture('water_refraction', { ratio: 0.75 }, scene, false, true);
         this.refractionRTT.wrapU = Constants.TEXTURE_MIRROR_ADDRESSMODE;
         this.refractionRTT.wrapV = Constants.TEXTURE_MIRROR_ADDRESSMODE;
+
         this.refractionRTT.refreshRate = 1;
         this.refractionRTT.renderList = [];
         this.refractionRTT.activeCamera = scene.activeCamera;
@@ -88,7 +90,12 @@ export class Water {
                     'steepness',
                     'windDir',
                     'sceneColor',
-                    'exposure'
+                    'exposure',
+                    'foamStrength',
+                    'foamThreshold',
+                    'foamFalloff',
+                    'foamShallowBoost',
+                    'foamNoiseScale'
                 ],
                 samplers: ['depthTex', 'refractionSampler', 'reflectionSampler']
             }
@@ -97,15 +104,14 @@ export class Water {
 
         // === Uniforms ===
         const u = {
-             Foam: {
-    foamStrength: { value: 1.2, range: [0, 3, 0.01] },
-    foamThreshold: { value: 0.4, range: [0, 1, 0.01] },
-    foamFalloff: { value: 1.2, range: [0, 3, 0.01] },
-    foamShallowBoost: { value: 1.0, range: [0, 3, 0.01] },
-    foamNoiseScale: { value: 1.0, range: [0.1, 3, 0.01] },
-    wFoamColor: { value: new Vector4(0.95, 0.97, 1.0, 1.0), color: true },
-  },
-
+            Foam: {
+                foamStrength: { value: 1.2, range: [0, 3, 0.01] },
+                foamThreshold: { value: 0.4, range: [0, 1, 0.01] },
+                foamFalloff: { value: 1.2, range: [0, 3, 0.01] },
+                foamShallowBoost: { value: 1.0, range: [0, 3, 0.01] },
+                foamNoiseScale: { value: 1.0, range: [0.1, 3, 0.01] },
+                wFoamColor: { value: new Vector4(0.95, 0.97, 1.0, 1.0), color: true }
+            },
 
             Waves: {
                 gravity: { value: 9.81, range: [0, 30, 0.01] },
@@ -136,15 +142,24 @@ export class Water {
             }
         };
 
-        // === Apply numeric uniforms ===
-        for (const [key, def] of Object.entries(u)) {
-            shaderMaterial.setFloat(key, def.value);
-        }
-shaderMaterial.setFloat('camMinZ', scene.activeCamera.minZ);
-shaderMaterial.setFloat('camMaxZ', scene.activeCamera.maxZ);
+        // === Continuous uniform sync ===
+        scene.onBeforeRenderObservable.add(() => {
+            for (const [, group] of Object.entries(u)) {
+                for (const [key, def] of Object.entries(group)) {
+                    if (!def.color && typeof def.value === 'number') {
+                        shaderMaterial.setFloat(key, def.value);
+                    }
+                }
+            }
+        });
 
+        shaderMaterial.setFloat('camMinZ', scene.activeCamera.minZ);
+        shaderMaterial.setFloat('camMaxZ', scene.activeCamera.maxZ);
+        let gui;
+        if (WINDOW_CONTEXT.is_dev) {
+            gui = new GUI({ title: 'Water Shader' });
+        }
         // === GUI setup ===
-        const gui = new GUI({ title: 'Water Shader' });
 
         // helper for color4 uniforms
         const setColorUniform = (mat, key, vec) => {
@@ -153,7 +168,7 @@ shaderMaterial.setFloat('camMaxZ', scene.activeCamera.maxZ);
 
         // main iteration
         for (const [groupName, group] of Object.entries(u)) {
-            const folder = gui.addFolder(groupName);
+            const folder = gui?.addFolder(groupName);
 
             for (const [key, def] of Object.entries(group)) {
                 const val = def.value;
@@ -162,21 +177,23 @@ shaderMaterial.setFloat('camMaxZ', scene.activeCamera.maxZ);
                     // --- COLOR UNIFORMS ---
                     setColorUniform(shaderMaterial, key, val);
                     const picker = { color: [val.x, val.y, val.z] };
-                    folder
-                        .addColor(picker, 'color')
-                        .name(key)
-                        .onChange((rgb) => {
-                            const [r, g, b] = rgb;
-                            setColorUniform(shaderMaterial, key, new Vector4(r, g, b, 1.0));
-                        });
+                    if (folder)
+                        folder
+                            .addColor(picker, 'color')
+                            .name(key)
+                            .onChange((rgb) => {
+                                const [r, g, b] = rgb;
+                                setColorUniform(shaderMaterial, key, new Vector4(r, g, b, 1.0));
+                            });
                 } else {
                     // --- FLOAT UNIFORMS ---
                     shaderMaterial.setFloat(key, val);
                     if (def.range) {
-                        folder
-                            .add(def, 'value', def.range[0], def.range[1], def.range[2])
-                            .name(key)
-                            .onChange((v) => shaderMaterial.setFloat(key, v));
+                        if (folder)
+                            folder
+                                .add(def, 'value', def.range[0], def.range[1], def.range[2])
+                                .name(key)
+                                .onChange((v) => shaderMaterial.setFloat(key, v));
                     }
                 }
             }
@@ -335,8 +352,9 @@ varying vec3 vPositionW;
 varying vec4 vClipSpace;
 varying vec3 vPosVS;
 varying vec3 vNormalW;
+varying vec3 vNormalVS; 
 varying float vCrest;
-
+varying vec2 vFoamFlow;
 // ---------------------------------------------------------------------------
 // Utility helpers
 // ---------------------------------------------------------------------------
@@ -438,12 +456,13 @@ void main(){
     }
 
     vec2 grad = heightGrad(pos.xz, time, W);
-
+ vFoamFlow = grad * (choppiness * 0.15);
     // Apply horizontal choppiness (Gerstner-style)
     pos.xz += grad * (choppiness * 0.3);
 
     // Normal
     vec3 n = normalize(vec3(-grad.x * choppiness, 1.0, -grad.y * choppiness));
+    
 
     // Foam crest proxy
     float slope = length(grad);
@@ -455,6 +474,8 @@ void main(){
     vNormalW = normalize((world * vec4(n, 0.0)).xyz);
     vPosVS = (worldView * vec4(pos, 1.0)).xyz;
     vClipSpace = worldViewProjection * vec4(pos, 1.0);
+     vec3 nVS = normalize((worldView * vec4(n, 0.0)).xyz);
+    vNormalVS = nVS;
     gl_Position = vClipSpace;
 }
 
@@ -467,7 +488,9 @@ varying vec3 vPositionW;
 varying vec4 vClipSpace;
 varying vec3 vPosVS;
 varying vec3 vNormalW;
+varying vec3 vNormalVS;
 varying float vCrest;
+varying vec2 vFoamFlow;
 
 uniform sampler2D depthTex;
 uniform sampler2D refractionSampler;
@@ -544,18 +567,21 @@ float phaseHG(float mu){
 
 void main(void){
   // Screen coords + ripple (use 2D distortion; this is important)
-  vec2 ndc = (vClipSpace.xy / vClipSpace.w) * 0.5 + 0.5;
-  float ripple = noise(vec3(vPositionW.xz * wNoiseScale * 1.8, time * 1.3)) * wNoiseOffset;
-  vec2 distort = ripple * vec2(6.0, 4.0);     // <<< 2D offset like the working version
+vec2 ndc = (vClipSpace.xy / vClipSpace.w) / 2.0 + 0.5;
+float ripple = noise(vec3(vPositionW.xz * wNoiseScale * 1.8, time*1.3)) * wNoiseOffset;
+// Terrain depth behind water
+float depthBehind = texture2D(depthTex, ndc + ripple).r;
+float surfaceDepth = (vClipSpace.z + camMinZ) / (camMaxZ + camMinZ);
+float depthDelta = max(0.0, depthBehind - surfaceDepth);
 
-  // WORKING FOAM BASIS: compare scene depth vs current surface depth in the SAME space
-  float depthBehind = texture2D(depthTex, ndc + distort).r; // sample with 2D offset
+// Convert to approximate meters in camera space
+// Here camMaxZ is camera far plane, often 100–1000 → scale accordingly.
+float waterDepthMeters = depthDelta * camMaxZ; 
 
-  // "Surface depth" in the same normalized space the working shader used
-  float surfaceDepth = (vClipSpace.z + camMinZ) / (camMaxZ + camMinZ);
+// --- Physical attenuation ---
+// 50m falloff: by 50m the refraction fully disappears
+float depthVisibility = exp(-waterDepthMeters / 50.0);
 
-  // Positive when terrain is behind the water surface (shallows → small positive)
-  float depthDelta = depthBehind - surfaceDepth;
 
   // Normalize to 0..1 range using your artistic 'maxDepth' in meters
   // (the original scaled by camMaxZ before dividing; we mimic that)
@@ -563,7 +589,10 @@ void main(void){
 
   // *** BUGFIX #1: Work consistently in WORLD space ***
   vec3 N  = normalize(vNormalW);
+  
   vec3 Vw = normalize(cameraPosition - vPositionW); // view dir (toward camera) in world space
+
+  
 if ((cameraPosition.y + 0.02) < vPositionW.y) Vw = -Vw; // flip when under water
 
   // Robust "are we underwater?" test (don’t rely on gl_FrontFacing)
@@ -584,20 +613,14 @@ if ((cameraPosition.y + 0.02) < vPositionW.y) Vw = -Vw; // flip when under water
   bool TIR = all(lessThan(abs(T), vec3(1e-6)));
   if (TIR) Fr = 1.0;
 
-  // UV offsets in screen space (heuristic)
-  vec2 refrUV = ndc + refrScale * (T.xy) + ripple * 0.6;
-  vec2 reflUV = ndc + reflScale * (R.xy) - ripple * 0.6;
-  if (isUnder) {
-    // already flipped view vector, so use same sign as above
-    refrUV = ndc + refrScale * (T.xy) + ripple * 0.6;
-}
+  float eyeZ = max(1.0, -vPosVS.z);
+float refrMult = isUnder ? refrScale : 0.0;
 
-  // *** BUGFIX #2: DO NOT CLAMP UVs ***
-  // (RTTs are in mirror address mode; clamping forces grey edge samples.)
+vec2 refrUV = ndc + (refrMult * T.xy) / eyeZ + ripple * 0.4;
+vec2 reflUV = ndc + (reflScale * R.xy) / eyeZ - ripple * 0.4;
 
-  // RTT fetches
-  vec3 refrColor = texture2D(refractionSampler, refrUV).rgb;
-  vec3 reflColor = texture2D(reflectionSampler,  reflUV).rgb;
+vec3 refrColor = texture2D(refractionSampler, refrUV).rgb;
+vec3 reflColor = texture2D(reflectionSampler, reflUV).rgb;
 
   // Sky model / env color
   vec3 env = sceneColor.rgb * exposure;
@@ -619,55 +642,78 @@ if ((cameraPosition.y + 0.02) < vPositionW.y) Vw = -Vw; // flip when under water
   horizonBlend = mix(0.35, 0.65, horizonBlend);
   vec3 skyColor = mix(skyZenith, skyHorizon, horizonBlend);
 
- // === Foam (driven by wave motion + shallow depth) ===
+// === Stylized overlapping foam outlines ===
+vec2 advect = vFoamFlow * time * 1.5;
 
-// Advect foam using the same Gerstner-like motion basis
-// This matches how waves actually move horizontally
-vec2 foamFlow = vec2(
-    sin(vPositionW.x * 0.05 + time * 0.6),
-    cos(vPositionW.z * 0.05 + time * 0.6)
-);
+// Base influence: shallow + crest
+float shallowFoam = smoothstep(foamThreshold * 0.5, foamThreshold + 0.25, 1.0 - wdepth);
+float crestFoam   = pow(vCrest, 1.2 + foamFalloff * 0.5);
+float foamCombined = mix(shallowFoam, crestFoam, 0.6);
 
-// Build coherent fbm noise basis
-float foamPhase = fbm(vec3(vPositionW.xz * foamNoiseScale * 0.5 + foamFlow, time * 0.4));
+// Derive a continuous “ring coordinate” from foamCombined.
+// We use several offset sine layers to create overlapping translucent bands.
+float t = foamCombined * 6.28318 * foamNoiseScale;   // scale to radians
+float band1 = 0.5 + 0.5 * sin(t + time * 0.1);
+float band2 = 0.5 + 0.5 * sin(t * 1.7 + time * 0.07);
+float band3 = 0.5 + 0.5 * sin(t * 2.4 - time * 0.05);
 
-// Combine depth-based foam (shore) and crest-based foam (vCrest)
-float shallowFoam = smoothstep(0.05, 0.25, 1.0 - wdepth);
-float crestFoam   = pow(vCrest, 1.2); // sharper crests
+// Combine layers with gentle weighting to make overlapping rings
+float bands = (band1 * 0.5 + band2 * 0.35 + band3 * 0.25);
 
-// Merge them and modulate by evolving noise pattern
-float foamCombined = mix(shallowFoam, crestFoam, 0.5);
-float foamMask = clamp(foamCombined * foamPhase * foamStrength, 0.0, 1.0);
+// Emphasize mid-tone regions (where bands overlap) using falloff as contrast
+bands = pow(bands, 1.5 / (foamFalloff + 0.5));
+
+// Boost shallow areas if desired
+float shallowBoost = 1.0 + foamShallowBoost * (1.0 - wdepth);
+
+// Final mask
+float foamMask = clamp(bands * foamCombined * foamStrength * shallowBoost, 0.0, 1.0);
 
 
 
 
-  // =========================
-  //       ABOVE WATER
-  // =========================
-  if (!isUnder) {
+
+
+// =========================
+//       ABOVE WATER
+// =========================
+if (!isUnder) {
     vec3 deepCol = mix(wDeepColor.rgb, wShallowColor.rgb, 0.3);
     float roughness = 0.15;
     Fr *= mix(1.0, 0.75, roughness);
 
-    vec3 absorbA = vec3(0.08, 0.045, 0.02) / clamp(envLum * 1.3, 0.3, 1.3);
+    // attenuation through the water column (tint refraction)
+    vec3 absorbA = vec3(0.08, 0.045, 0.02);
     vec3 trans   = exp(-absorbA * (4.0 * clamp(wdepth + 0.15, 0.0, 1.0)));
-    vec3 transCol = deepCol * trans;
 
-    vec3 fresnelMix = mix(transCol, reflColor, Fr * 0.85);
-    if (TIR) fresnelMix = mix(fresnelMix, reflColor, 0.6);
-    // Final mix (slightly boosted for visibility)
-vec3 withFoam = mix(fresnelMix, wFoamColor.rgb, foamMask * 0.8);
+    // sample refraction & reflection with the NEW UVs
+    vec3 refrCol = texture2D(refractionSampler, refrUV).rgb;
+    vec3 reflCol = texture2D(reflectionSampler,  reflUV).rgb;
+
+    // tint refraction and blend a bit towards deep tone for body color
+    refrCol *= trans;
+    refrCol = mix(refrCol, deepCol, 0.3);
+
+ // fade refraction with exponential depth falloff
 
 
-    float airFade = smoothstep(0.0, 1.0, horizonBlend);
-    vec3 airMix = mix(withFoam, skyColor, airFade * 0.12);
-    float fog = exp(-pow(horizonBlend * 1.3, 2.0));
-    gl_FragColor = vec4(mix(skyColor, airMix, fog), 0.9);
+refrCol = mix(refrCol, deepCol, 1.0 - depthVisibility);
+
+// Fresnel mix
+vec3 color = mix(refrCol, reflCol, Fr);
+
+    // foam overlay (unchanged)
+    // vec2 wind = normalize(windDir.xy + 1e-4);
+    // vec2 advect = wind * time * 0.03;
+    // float foamNoise = noise(vec3((vPositionW.xz + advect) * fNoiseScale, time * 0.5));
+    // float shallowFoam = 1.0 - smoothstep(0.15, 0.8, wdepth);
+    // float crestFoam   = smoothstep(0.4, 0.9, vCrest);
+    // float foamMask    = clamp(foamNoise * (0.4 * shallowFoam + 0.8 * crestFoam), 0.0, 1.0);
+    color = mix(color, wFoamColor.rgb, foamMask * 0.6);
+
+    gl_FragColor = vec4(color, 1.0);
     return;
-  }
-
-
+}
 
 // =========================
 //       UNDER WATER
