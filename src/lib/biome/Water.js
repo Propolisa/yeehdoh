@@ -1,4 +1,4 @@
-import { BoundingInfo, Constants, Effect, Mesh, MirrorTexture, Plane, RenderTargetTexture, ShaderMaterial, Vector3, Vector4, VertexBuffer, VertexData } from '@babylonjs/core';
+import { Constants, Effect, Mesh, MirrorTexture, Plane, RenderTargetTexture, ShaderMaterial, Vector4, VertexBuffer, VertexData } from '@babylonjs/core';
 
 /**
  * Stylized physically-plausible water surface with Gerstner waves + natural horizon blending.
@@ -25,7 +25,7 @@ export class Water {
         this.depthTex = depthRenderer.getDepthMap();
 
         // === Refraction RTT ===
-        this.refractionRTT = new RenderTargetTexture('water_refraction', { ratio: 0.25 }, scene, false, true);
+        this.refractionRTT = new RenderTargetTexture('water_refraction', { ratio: 0.75 }, scene, false, true);
         this.refractionRTT.wrapU = Constants.TEXTURE_MIRROR_ADDRESSMODE;
         this.refractionRTT.wrapV = Constants.TEXTURE_MIRROR_ADDRESSMODE;
         this.refractionRTT.refreshRate = 1;
@@ -109,29 +109,35 @@ export class Water {
         shaderMaterial.setFloat('fNoiseScale', 1.8);
         shaderMaterial.setFloat('maxDepth', 5.0);
 
-        shaderMaterial.setVector4('wDeepColor', new Vector4(0.0, 0.3, 0.5, 1.0));
-        shaderMaterial.setVector4('wShallowColor', new Vector4(0.0, 0.7, 0.9, 1.0));
-        shaderMaterial.setVector4('wFoamColor', new Vector4(1, 1, 1, 1));
+    shaderMaterial.setVector4('wDeepColor', new Vector4(0.02, 0.25, 0.4, 1.0)); // deeper blue-green
+shaderMaterial.setVector4('wShallowColor', new Vector4(0.03, 0.55, 0.7, 1.0)); // less cyan pop
+
+
+ shaderMaterial.setVector4('wFoamColor', new Vector4(0.95, 0.97, 1.0, 1));  // slightly dimmer foam
 
         shaderMaterial.setFloat('iorWater', 1.333);
         shaderMaterial.setFloat('iorAir', 1.0);
-        shaderMaterial.setFloat('refrScale', 0.12);
-        shaderMaterial.setFloat('reflScale', 0.22);
+       shaderMaterial.setFloat('reflScale', 0.12);     // ↓ from 0.22 — weaker mirror distortion
+shaderMaterial.setFloat('refrScale', 0.18);     // ↑ from 0.12 — more refraction dominance
+
 
         shaderMaterial.setFloat('gravity', 9.81);
         shaderMaterial.setFloat('waterDepth', 20.0);
-        shaderMaterial.setFloat('choppiness', 0.9);
+      shaderMaterial.setFloat('choppiness', 1.1);     // slightly rougher surface -> breaks up glare
+
+
         shaderMaterial.setVector4('waveA', new Vector4(1.0, 0.3, 0.0, 12.0)); // swell
         shaderMaterial.setVector4('waveB', new Vector4(-0.7, 1.0, 0.0, 7.0)); // swell 2
         shaderMaterial.setVector4('waveC', new Vector4(0.3, -1.0, 0.0, 3.0)); // chop
         shaderMaterial.setVector4('waveD', new Vector4(-1.0, -0.4, 0.0, 1.5)); // chop
-        shaderMaterial.setVector4('steepness', new Vector4(0.75, 0.8, 0.65, 0.6));
+     shaderMaterial.setVector4('steepness', new Vector4(0.9, 0.95, 0.85, 0.8)); // more wave randomness
+
         shaderMaterial.setVector4('windDir', new Vector4(0.8, -0.6, 0, 0));
         const cc = scene.clearColor;
         shaderMaterial.setVector4('sceneColor', new Vector4(cc.r, cc.g, cc.b, 1.0));
         shaderMaterial.setFloat('exposure', scene.imageProcessingConfiguration.exposure ?? 1.0);
 
-        // shaderMaterial.alpha = 1;
+        shaderMaterial.alpha = 1;
 
         this.material = shaderMaterial;
         this.mesh.material = shaderMaterial;
@@ -148,7 +154,7 @@ export class Water {
         const engine = scene.getEngine();
         engine.onResizeObservable.add(() => {
 
-            this.refractionRTT.resize({ ratio: 0.25 });
+            this.refractionRTT.resize({ ratio: 0.75 });
             this.reflectionRTT.resize({ ratio: 0.5 });
             shaderMaterial.setTexture('refractionSampler', this.refractionRTT);
         shaderMaterial.setTexture('reflectionSampler', this.reflectionRTT);
@@ -170,86 +176,76 @@ export class Water {
         const updateRenderLists = () => {
             const list = scene.meshes.filter((m) => m !== this.mesh && m.isVisible && m.isEnabled());
             this.reflectionRTT.renderList = list;
-            //   this.refractionRTT.renderList = list;
+              this.refractionRTT.renderList = list;
         };
         updateRenderLists();
         this._meshAddedObserver = scene.onNewMeshAddedObservable.add(updateRenderLists);
         this._meshRemovedObserver = scene.onMeshRemovedObservable?.add?.(updateRenderLists);
     }
 
-   _makeCircularMesh(scene, name, radius = 128, radialSegments = 80, ringSegments = 80, edgeDepth = 2000) {
-    const positions = [];
-    const indices = [];
-    const uvs = [];
+     /** Circular water surface (double-sided), same topology approach */
+     _makeCircularMesh(scene, name, radius = 128, radialSegments = 80, ringSegments = 80, edgeDepth = 2000) {
+        const positions = [];
+        const indices = [];
+        const uvs = [];
 
-    // --- top disk vertices ---
-    for (let i = 0; i <= ringSegments; i++) {
-        const t = i / ringSegments;
-        const r = radius * Math.pow(t, 2.2);
+        // --- main circular surface ---
+        for (let i = 0; i <= ringSegments; i++) {
+            const t = i / ringSegments;
+            const r = radius * Math.pow(t, 2.2);
+            for (let j = 0; j <= radialSegments; j++) {
+                const theta = (j / radialSegments) * Math.PI * 2;
+                const x = r * Math.cos(theta);
+                const z = r * Math.sin(theta);
+                positions.push(x, 0, z);
+                uvs.push(j / radialSegments, i / ringSegments);
+            }
+        }
+
+        const stride = radialSegments + 1;
+        for (let i = 0; i < ringSegments; i++) {
+            for (let j = 0; j < radialSegments; j++) {
+                const a = i * stride + j;
+                const b = a + 1;
+                const c = a + stride;
+                const d = c + 1;
+                indices.push(a, b, c, b, d, c);
+            }
+        }
+
+        // --- extrude the outer ring downward ---
+        const baseRingStart = ringSegments * stride;
         for (let j = 0; j <= radialSegments; j++) {
-            const theta = (j / radialSegments) * Math.PI * 2.0;
-            const x = r * Math.cos(theta);
-            const z = r * Math.sin(theta);
-            positions.push(x, 0, z);
-            uvs.push(j / radialSegments, i / ringSegments);
+            const idx = baseRingStart + j;
+            const x = positions[idx * 3 + 0];
+            const z = positions[idx * 3 + 2];
+            positions.push(x, -edgeDepth, z);
+            uvs.push(j / radialSegments, 1.1); // push UV slightly beyond 1 for gradient safety
         }
-    }
 
-    const stride = radialSegments + 1;
-
-    // --- top disk triangles ---
-    for (let i = 0; i < ringSegments; i++) {
+        const newRingStart = positions.length / 3 - (radialSegments + 1);
         for (let j = 0; j < radialSegments; j++) {
-            const a = i * stride + j;
-            const b = a + 1;
-            const c = a + stride;
-            const d = c + 1;
-            indices.push(a, b, c);
-            indices.push(b, d, c);
+            const topA = baseRingStart + j;
+            const topB = baseRingStart + j + 1;
+            const botA = newRingStart + j;
+            const botB = newRingStart + j + 1;
+            indices.push(topA, topB, botA, topB, botB, botA);
         }
+
+        // --- reverse winding to match reflection ---
+        indices.reverse();
+
+        const mesh = new Mesh(name, scene);
+        const vd = new VertexData();
+        vd.positions = positions;
+        vd.indices = indices;
+        vd.uvs = uvs;
+        const normals = [];
+        VertexData.ComputeNormals(positions, indices, normals);
+        vd.normals = normals;
+        vd.applyToMesh(mesh);
+        return mesh;
     }
-
-    // --- outer ring extrusion ---
-    const topStart = ringSegments * stride;
-    const bottomStart = positions.length / 3;
-
-    for (let j = 0; j <= radialSegments; j++) {
-        const idx = topStart + j;
-        const x = positions[idx * 3 + 0];
-        const z = positions[idx * 3 + 2];
-        positions.push(x, -edgeDepth, z);
-        uvs.push(j / radialSegments, 1.1);
-    }
-
-    // --- vertical wall triangles (correct CCW winding) ---
-    for (let j = 0; j < radialSegments; j++) {
-        const topA = topStart + j;
-        const topB = topStart + j + 1;
-        const botA = bottomStart + j;
-        const botB = bottomStart + j + 1;
-
-        // faces pointing outward from the center
-        indices.push(topA, topB, botA);
-        indices.push(topB, botB, botA);
-    }
-
-    // --- compute normals ---
-    const normals = [];
-    VertexData.ComputeNormals(positions, indices, normals);
-
-    const mesh = new Mesh(name, scene);
-    const vd = new VertexData();
-    vd.positions = positions;
-    vd.indices = indices;
-    vd.uvs = uvs;
-    vd.normals = normals;
-    vd.applyToMesh(mesh);
-
-    // --- ensure bounding box includes deep rim ---
-    mesh.Is
-
-    return mesh;
-}
 
     /** Vertex + fragment shaders */
     _registerShaders() {
@@ -273,7 +269,7 @@ varying vec3 vNormalW;
 varying float vCrest;
 
 // ---------------- Gerstner Waves (Shadertoy exact port) ----------------
-#define NUM_WAVES 5
+#define NUM_WAVES 3
 #define SEA_LEVEL 0.0
 
 float hash11(float p){ p=fract(p*0.1031); p*=p+33.33; p*=p+p; return fract(p); }
@@ -332,10 +328,14 @@ void main(){
     Wave W[NUM_WAVES];
     initWaves(W, time);
 
-    vec3 pos = position;
+    
+vec3 pos = position;
+vec2 grad = heightGrad(pos.xz, time, W);
+float baseY = pos.y;
+if (baseY > -1500.0) {  // adjust threshold depending on edgeDepth
     float y = heightAt(pos.xz, time, W);
-    vec2 grad = heightGrad(pos.xz, time, W);
     pos.y = y;
+}
 
     // Normal from analytical slope
     vec3 n = normalize(vec3(-grad.x, 1.0, -grad.y));
@@ -356,7 +356,7 @@ void main(){
 }
 `;
 
-    Effect.ShadersStore['customFragmentShader'] = `
+     Effect.ShadersStore['customFragmentShader'] = `
 precision highp float;
 
 varying vec3 vPositionW;
@@ -421,9 +421,6 @@ float phaseHG(float mu){
 }
 
 void main(void){
-gl_FragColor = vec4(vec3(1, 0, 0), 1.0);
-return;
-
   // Screen coords + ripple
   vec2 ndc = (vClipSpace.xy / vClipSpace.w) * 0.5 + 0.5;
   float ripple = noise(vec3(vPositionW.xz * wNoiseScale * 1.8, time*1.3)) * wNoiseOffset;
@@ -434,16 +431,13 @@ return;
   float waterDepth = camMaxZ * (depthBehind - linearWaterDepth);
   float wdepth = clamp(waterDepth / maxDepth, 0.0, 1.0);
 
-  // Work consistently in WORLD space
+  // *** BUGFIX #1: Work consistently in WORLD space ***
   vec3 N  = normalize(vNormalW);
-  vec3 Vw = normalize(cameraPosition - vPositionW); // toward camera
-  // Robust "are we underwater?" test (don’t rely on gl_FrontFacing)
-  bool isUnder = (cameraPosition.y + 0.02) < vPositionW.y;
-  if (isUnder) Vw = -Vw; // ensure consistent facing for refraction math
+  vec3 Vw = normalize(cameraPosition - vPositionW); // view dir (toward camera) in world space
+if ((cameraPosition.y + 0.02) < vPositionW.y) Vw = -Vw; // flip when under water
 
-  // Quick guard for the extruded side wall ("ocean barrel"): give it a stable horizon tint
-  // so we never see grey bands when looking to infinity at shallow angles.
-  bool isWall = abs(N.y) < 0.15;
+  // Robust "are we underwater?" test (don’t rely on gl_FrontFacing)
+  bool isUnder = !gl_FrontFacing;
 
   // IOR & Fresnel
   float n1 = isUnder ? iorWater : iorAir;
@@ -463,19 +457,28 @@ return;
   // UV offsets in screen space (heuristic)
   vec2 refrUV = ndc + refrScale * (T.xy) + ripple * 0.6;
   vec2 reflUV = ndc + reflScale * (R.xy) - ripple * 0.6;
+  if (isUnder) {
+    // already flipped view vector, so use same sign as above
+    refrUV = ndc + refrScale * (T.xy) + ripple * 0.6;
+}
 
-  // DO NOT clamp UVs (we use mirror address mode)
+  // *** BUGFIX #2: DO NOT CLAMP UVs ***
+  // (RTTs are in mirror address mode; clamping forces grey edge samples.)
+
+  // RTT fetches
   vec3 refrColor = texture2D(refractionSampler, refrUV).rgb;
   vec3 reflColor = texture2D(reflectionSampler,  reflUV).rgb;
 
-  // Sky / env color
+  // Sky model / env color
   vec3 env = sceneColor.rgb * exposure;
+
+  // *** BUGFIX #3: If env is too desaturated or too dark, fall back to a blue sky ***
   float envLum = max(0.0001, dot(env, vec3(0.2126,0.7152,0.0722)));
   vec3 envNorm = env / envLum;
   float envMax = max(max(envNorm.r, envNorm.g), envNorm.b);
   float envMin = min(min(envNorm.r, envNorm.g), envNorm.b);
   float envSat = (envMax - envMin) / max(envMax, 1e-3);
-  vec3 fallbackSky = vec3(0.18, 0.36, 0.85);
+  vec3 fallbackSky = vec3(0.18, 0.36, 0.85); // pleasant sky blue
   vec3 envSafe = mix(fallbackSky, env, clamp(envSat * envLum * 3.0, 0.0, 1.0));
 
   vec3 skyZenith  = envSafe * 0.85;
@@ -493,16 +496,6 @@ return;
   float shallowFoam = 1.0 - smoothstep(0.15, 0.8, wdepth);
   float crestFoam   = smoothstep(0.4, 0.9, vCrest);
   float foamMask    = clamp(foamNoise * (0.4 * shallowFoam + 0.8 * crestFoam), 0.0, 1.0);
-
-  // --- Barrel wall fallback (works for extruded edge into infinity) ---
-  if (isWall) {
-    // Vertical faces: mix deep water toward horizon sky with gentle fog
-    float wallDepth = clamp((-vPositionW.y) / (maxDepth * 4.0), 0.0, 1.0);
-    vec3 wallDeep = mix(wDeepColor.rgb, wShallowColor.rgb, 0.15);
-    vec3 wallCol = mix(wallDeep, skyColor, 0.35 + 0.45 * (1.0 - wallDepth));
-    gl_FragColor = vec4(wallCol, 0.95);
-    return;
-  }
 
   // =========================
   //       ABOVE WATER
@@ -527,62 +520,71 @@ return;
     return;
   }
 
-  // =========================
-  //       UNDER WATER
-  // =========================
+// =========================
+//       UNDER WATER
+// =========================
 
-  // Distance camera->fragment
-  float d = distance(cameraPosition, vPositionW);
+// =========================
+//       UNDER WATER
+// =========================
 
-  // Spectral coefficients (brighter near-surface)
-  vec3 sigma_a = vec3(0.06, 0.035, 0.015);  // absorption
-  vec3 sigma_s = vec3(0.015, 0.025, 0.040); // scattering
-  vec3 sigma_t = sigma_a + sigma_s;
+// Physical model: air-light through Snell's window + single scattering + extinction.
+float d = distance(cameraPosition, vPositionW);
 
-  // Softer attenuation to avoid overly dark window
-  float attenuation = clamp(exp(-0.25 * d), 0.35, 1.0);
+// --- Improved Snell’s window brightness model ---
 
-  // Snell’s window geometry (use view-upness after Vw fix)
-  float mu = clamp(dot(normalize(-Vw), up), 0.0, 1.0);
-  float snellWindow = smoothstep(iorAir/iorWater - 0.1, 1.0, mu); // open around critical angle
-  float depthFade = exp(-0.3 * abs(cameraPosition.y - vPositionW.y));
-  snellWindow *= depthFade;
+// Spectral coefficients (tuned for clearer, brighter near-surface light)
+vec3 sigma_a = vec3(0.06, 0.035, 0.015);  // absorption (reds fade faster)
+vec3 sigma_s = vec3(0.015, 0.025, 0.040); // scattering (more blue scatter)
+vec3 sigma_t = sigma_a + sigma_s;
 
-  // Pull brightened sky and tint slightly toward horizon; avoid grey RTT issues
-  vec3 skyBase = texture2D(reflectionSampler, ndc).rgb;
-  vec3 skyTint = mix(vec3(0.3, 0.55, 0.9), skyBase, 0.5);
+// Softer attenuation curve to prevent overly dark appearance
+float attenuation = clamp(exp(-0.25 * d), 0.35, 1.0);
 
-  // Bright, luminous window (inside cone is lighter than outside)
-  vec3 L_window = skyTint * (1.3 + 0.7 * snellWindow);
+// Compute Snell’s window angle weight
+float mu = clamp(dot(Vw, up), 0.0, 1.0);
+float snellWindow = smoothstep(0.30, 0.96, mu);
 
-  // Single forward scattering
-  float phase = phaseHG(mu);
-  vec3 waterHue = normalize(vec3(0.05, 0.25, 0.55) + wShallowColor.rgb * 0.3);
-  vec3 L_scatter = waterHue * phase * 0.8 * (1.0 - attenuation);
+// Approximate refraction mix underwater
+ refrUV = ndc + refrScale * (-T.xy) + ripple * 0.8;
+ refrColor = texture2D(refractionSampler, refrUV).rgb;
+ reflColor = texture2D(reflectionSampler, ndc).rgb;
+vec3 skyTint = mix(refrColor, reflColor, 0.4);
 
-  // Subtle Fresnel rim from below
-  vec3 L_surface = reflColor * (Fr * 0.3) * snellWindow;
-  if (TIR) { L_surface += reflColor * 0.4; }
+// Brighten inside Snell’s cone for realistic luminous window
+vec3 L_window = skyTint * (1.3 + 0.7 * snellWindow);
 
-  // Compose
-  vec3 color = L_window * attenuation + L_scatter + L_surface;
+// Single forward scattering contribution
+float phase = phaseHG(mu);
+vec3 waterHue = normalize(vec3(0.05, 0.25, 0.55) + wShallowColor.rgb * 0.3);
+vec3 L_scatter = waterHue * phase * 0.8 * (1.0 - attenuation);
 
-  // Distance haze
-  float farHaze = clamp(d / (camMaxZ * 0.6), 0.0, 1.0);
-  vec3 hazeTint = waterHue * 0.25;
-  color = mix(color, hazeTint, farHaze * 0.35);
+// Subtle Fresnel reflection from below (rim highlight)
+vec3 L_surface = reflColor * (Fr * 0.3) * snellWindow;
 
-  // Extra lift in the center of the window
-  float windowLift = smoothstep(0.6, 1.0, mu);
-  color += vec3(0.25, 0.3, 0.35) * windowLift;
+// Combine all contributions
+vec3 color = L_window * attenuation + L_scatter + L_surface;
 
-  // Gentle gamma lift
-  color = pow(color, vec3(0.9));
+// Extra boost at the center of Snell’s window (direct skylight through surface)
+float windowLift = smoothstep(0.6, 1.0, mu);
+color += vec3(0.25, 0.3, 0.35) * windowLift;
 
-  gl_FragColor = vec4(clamp(color, 0.0, 1.0), 0.9);
+// Add mild distance haze for depth perception
+float farHaze = clamp(d / (camMaxZ * 0.6), 0.0, 1.0);
+vec3 hazeTint = waterHue * 0.25;
+color = mix(color, hazeTint, farHaze * 0.35);
+
+// Gentle gamma lift for perceptual brightness
+color = pow(color, vec3(0.9));
+
+// Final output
+gl_FragColor = vec4(clamp(color, 0.0, 1.0), 0.9);
+
+
+
+
 }
 `;
-
 
 
     }
