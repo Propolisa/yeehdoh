@@ -35,7 +35,7 @@ export class Water {
         // === Reflection RTT ===
         this.reflectionRTT = new MirrorTexture('water_reflection', { ratio: 0.5 }, scene, true);
         this.reflectionRTT.adaptiveBlurKernel = 64;
-        this.reflectionRTT.mirrorPlane = new Plane(0, -1, 0, this.level + 1);
+        this.reflectionRTT.mirrorPlane = new Plane(0, -1, 0, this.level);
         this.reflectionRTT.refreshRate = 1;
         this.reflectionRTT.renderList = [];
 
@@ -138,7 +138,7 @@ export class Water {
 
         // === Keep time and camera in sync ===
         this._renderObserver = scene.onBeforeRenderObservable.add(() => {
-            shaderMaterial.setFloat('time', performance.now() * 0.0006);
+            shaderMaterial.setFloat('time', performance.now() * 0.0009);
 
             shaderMaterial.setVector3('cameraPosition', scene.activeCamera.position);
             this.refractionRTT.activeCamera = scene.activeCamera;
@@ -147,10 +147,11 @@ export class Water {
         // === Handle resizing ===
         const engine = scene.getEngine();
         engine.onResizeObservable.add(() => {
-            const w = engine.getRenderWidth();
-            const h = engine.getRenderHeight();
-            this.refractionRTT.resize({ width: w, height: h });
-            this.reflectionRTT.resize({ width: w, height: h });
+
+            this.refractionRTT.resize({ ratio: 0.25 });
+            this.reflectionRTT.resize({ ratio: 0.5 });
+            shaderMaterial.setTexture('refractionSampler', this.refractionRTT);
+        shaderMaterial.setTexture('reflectionSampler', this.reflectionRTT);
         });
 
         // === Link island ===
@@ -176,19 +177,24 @@ export class Water {
         this._meshRemovedObserver = scene.onMeshRemovedObservable?.add?.(updateRenderLists);
     }
 
-    /** Circular water mesh */
-    /** Circular water mesh with downward extruded edge ("barrel") */
     _makeCircularMesh(scene, name, radius = 128, radialSegments = 80, ringSegments = 80, edgeDepth = 2000) {
         const positions = [];
         const indices = [];
         const uvs = [];
 
-        // --- main circular surface ---
+        // --- parameters ---
+        const innerRadius = Math.max(radius * 0.02, 1.0); // clamp to avoid center singularity
+        const rRange = radius - innerRadius;
+
+        // --- build concentric rings ---
         for (let i = 0; i <= ringSegments; i++) {
             const t = i / ringSegments;
-            const r = radius * Math.pow(t, 2.2);
+            // smoother, more even distribution (ease-in-out)
+            const smoothT = t * t * (3.0 - 2.0 * t);
+            const r = innerRadius + rRange * smoothT;
+
             for (let j = 0; j <= radialSegments; j++) {
-                const theta = (j / radialSegments) * Math.PI * 2;
+                const theta = (j / radialSegments) * Math.PI * 2.0;
                 const x = r * Math.cos(theta);
                 const z = r * Math.sin(theta);
                 positions.push(x, 0, z);
@@ -197,6 +203,8 @@ export class Water {
         }
 
         const stride = radialSegments + 1;
+
+        // --- connect quads between rings ---
         for (let i = 0; i < ringSegments; i++) {
             for (let j = 0; j < radialSegments; j++) {
                 const a = i * stride + j;
@@ -207,14 +215,14 @@ export class Water {
             }
         }
 
-        // --- extrude the outer ring downward ---
+        // --- extrude outer edge downward ("barrel") ---
         const baseRingStart = ringSegments * stride;
         for (let j = 0; j <= radialSegments; j++) {
             const idx = baseRingStart + j;
             const x = positions[idx * 3 + 0];
             const z = positions[idx * 3 + 2];
             positions.push(x, -edgeDepth, z);
-            uvs.push(j / radialSegments, 1.1); // push UV slightly beyond 1 for gradient safety
+            uvs.push(j / radialSegments, 1.1);
         }
 
         const newRingStart = positions.length / 3 - (radialSegments + 1);
@@ -226,7 +234,7 @@ export class Water {
             indices.push(topA, topB, botA, topB, botB, botA);
         }
 
-        // --- reverse winding to match reflection ---
+        // --- reverse winding for reflection ---
         indices.reverse();
 
         const mesh = new Mesh(name, scene);
@@ -234,6 +242,7 @@ export class Water {
         vd.positions = positions;
         vd.indices = indices;
         vd.uvs = uvs;
+
         const normals = [];
         VertexData.ComputeNormals(positions, indices, normals);
         vd.normals = normals;
@@ -244,7 +253,7 @@ export class Water {
     /** Vertex + fragment shaders */
     _registerShaders() {
         // === Vertex shader unchanged (Gerstner) ===
-       Effect.ShadersStore["customVertexShader"] = `
+        Effect.ShadersStore['customVertexShader'] = `
 precision highp float;
 
 attribute vec3 position;
@@ -263,7 +272,7 @@ varying vec3 vNormalW;
 varying float vCrest;
 
 // ---------------- Gerstner Waves (Shadertoy exact port) ----------------
-#define NUM_WAVES 14
+#define NUM_WAVES 5
 #define SEA_LEVEL 0.0
 
 float hash11(float p){ p=fract(p*0.1031); p*=p+33.33; p*=p+p; return fract(p); }
@@ -285,8 +294,13 @@ void initWaves(out Wave W[NUM_WAVES], float t){
         float k = 6.28318530718 / L;
         float w = sqrt(9.8*k);
 
-        float aSpread = swell ? mix(-0.6,0.6,r1) : mix(-3.14159,3.14159,r1);
-        vec2 dir = normalize(rot(baseA + aSpread) * vec2(1.0,0.0));
+        // Keep all waves roughly aligned to a dominant wind direction,
+// with only small angular deviation (±10–20 degrees).
+float baseDir = baseA; // main wind-aligned direction
+float deviation = radians(mix(-15.0, 15.0, r1)); // small directional spread
+float waveAngle = baseDir + deviation;
+vec2 dir = normalize(vec2(cos(waveAngle), sin(waveAngle)));
+
 
         float amp = swell ? mix(0.06,0.16,r0) : mix(0.006,0.035,r0);
         W[i] = Wave(dir, amp, k, w, r1*6.28318);
@@ -341,9 +355,7 @@ void main(){
 }
 `;
 
-
-        // === Fragment shader with horizon blending ===
-        Effect.ShadersStore['customFragmentShader'] = `
+      Effect.ShadersStore['customFragmentShader'] = `
 precision highp float;
 
 varying vec3 vPositionW;
@@ -372,177 +384,190 @@ uniform float refrScale;
 uniform float reflScale;
 uniform vec4  windDir;
 uniform vec3  cameraPosition;
-uniform vec4 sceneColor;
+uniform vec4  sceneColor;
 uniform float exposure;
 
-// --- helpers ---
-float mod289(float x){return x - floor(x*(1.0/289.0))*289.0;}
-vec4  mod289(vec4 x){return x - floor(x*(1.0/289.0))*289.0;}
-vec4  perm(vec4 x){return mod289(((x*34.0)+1.0)*x);}
-
-float noise(vec3 p) {
-  vec3 i = floor(p);
-  vec3 f = fract(p);
-  f = f * f * (3.0 - 2.0 * f);
-  float n = dot(i, vec3(1.0, 57.0, 113.0));
-  float res = mix(
-    mix(
-      mix(fract(sin(n + 0.0) * 43758.5453),
-          fract(sin(n + 1.0) * 43758.5453), f.x),
-      mix(fract(sin(n + 57.0) * 43758.5453),
-          fract(sin(n + 58.0) * 43758.5453), f.x),
-      f.y),
-    mix(
-      mix(fract(sin(n + 113.0) * 43758.5453),
-          fract(sin(n + 114.0) * 43758.5453), f.x),
-      mix(fract(sin(n + 170.0) * 43758.5453),
-          fract(sin(n + 171.0) * 43758.5453), f.x),
-      f.y),
-    f.z);
-  return res;
+// --- small helpers ----------------------------------------------------------
+float noise(vec3 p){
+  vec3 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
+  float n=dot(i, vec3(1.0,57.0,113.0));
+  float n000=fract(sin(n+0.0)*43758.5453);
+  float n100=fract(sin(n+1.0)*43758.5453);
+  float n010=fract(sin(n+57.0)*43758.5453);
+  float n110=fract(sin(n+58.0)*43758.5453);
+  float n001=fract(sin(n+113.0)*43758.5453);
+  float n101=fract(sin(n+114.0)*43758.5453);
+  float n011=fract(sin(n+170.0)*43758.5453);
+  float n111=fract(sin(n+171.0)*43758.5453);
+  float nx00=mix(n000,n100,f.x);
+  float nx10=mix(n010,n110,f.x);
+  float nx01=mix(n001,n101,f.x);
+  float nx11=mix(n011,n111,f.x);
+  float nxy0=mix(nx00,nx10,f.y);
+  float nxy1=mix(nx01,nx11,f.y);
+  return mix(nxy0,nxy1,f.z);
 }
 
 float fresnelSchlick(float cosTheta, float F0){
   return F0 + (1.0 - F0)*pow(1.0 - cosTheta, 5.0);
 }
 
+// Simple HG-ish forward phase (g in [0, 0.9])
+float phaseHG(float mu, float g){
+  float gg = g*g;
+  float denom = pow(1.0 + gg - 2.0*g*mu, 1.5);
+  return (1.0 - gg) / max(1e-3, 4.0 * 3.14159 * denom);
+}
+
 void main(void){
+  // --- screen coords & jitter ------------------------------------------------
   vec2 ndc = (vClipSpace.xy / vClipSpace.w) * 0.5 + 0.5;
   float ripple = noise(vec3(vPositionW.xz * wNoiseScale * 1.8, time*1.3)) * wNoiseOffset;
+
+  // depth-derived local "shallow" factor (used above-water)
   float depthBehind = texture2D(depthTex, ndc + ripple).r;
   float linearWaterDepth = (vClipSpace.z + camMinZ) / (camMaxZ + camMinZ);
   float waterDepth = camMaxZ * (depthBehind - linearWaterDepth);
   float wdepth = clamp(waterDepth / maxDepth, 0.0, 1.0);
 
   bool isUnder = !gl_FrontFacing;
-  vec3 N = normalize(vNormalW);
-  vec3 V = normalize(-vPosVS);
 
-  // === Correct IORs depending on inside/outside ===
+  vec3 N = normalize(vNormalW);
+  vec3 Vvs = normalize(-vPosVS);                 // view dir in view-space
+  vec3 Vw  = normalize(cameraPosition - vPositionW); // view dir in world-space (toward camera)
+
+  // IOR / Fresnel set-up (works for both sides)
   float n1 = isUnder ? iorWater : iorAir;
-  float n2 = isUnder ? iorAir : iorWater;
+  float n2 = isUnder ? iorAir   : iorWater;
   float eta = n1 / n2;
-  float cosI = clamp(dot(N, V), 0.0, 1.0);
+  float cosI = clamp(dot(N, Vvs), 0.0, 1.0);
   float F0 = pow((n1 - n2) / (n1 + n2), 2.0);
   float Fr = fresnelSchlick(cosI, F0);
 
-  // === compute refraction direction properly ===
-  vec3 T = refract(-V, N, eta);
-  vec3 R = reflect(-V, N);
+  // directions
+  vec3 T = refract(-Vvs, N, eta);
+  vec3 R = reflect(-Vvs,  N);
 
   bool TIR = all(lessThan(abs(T), vec3(1e-6)));
   if (TIR) Fr = 1.0;
 
-  // === Screen-space UV offsets for reflection/refraction ===
+  // screen-space offsets for the RTTs (kept for the above-water look)
   vec2 refrUV = ndc + refrScale * (T.xy) + ripple * 0.6;
   vec2 reflUV = ndc + reflScale * (R.xy) - ripple * 0.6;
 
-  // === For underwater: invert sense of refraction ===
+  // Underwater: use opposite offset sense for refraction (looking up)
   if (isUnder) {
-    // flip refraction direction vertically to look upward
     refrUV = ndc - refrScale * (T.xy) - ripple * 0.6;
   }
 
   refrUV = clamp(refrUV, 0.001, 0.999);
   reflUV = clamp(reflUV, 0.001, 0.999);
 
-  // === sample world ===
+  // RTT fetches (kept for above-water path)
   vec3 refrColor = texture2D(refractionSampler, refrUV).rgb;
   vec3 reflColor = texture2D(reflectionSampler, reflUV).rgb;
 
-// === physically-consistent sky and exposure ===
+  // --- sky model used by both paths (stable, not grey) -----------------------
+  vec3 env = sceneColor.rgb * exposure;
+  float envLum = max(0.001, dot(env, vec3(0.2126,0.7152,0.0722)));
 
-vec3 envColor = sceneColor.rgb * exposure;
+  vec3 skyZenith  = env * 0.85;
+  vec3 skyHorizon = env * 0.95;
+  vec3 up = vec3(0.0, 1.0, 0.0);
 
-// absorption (clear tropical water baseline) scaled by scene brightness
-float envLum = max(0.001, dot(envColor, vec3(0.2126, 0.7152, 0.0722)));
+  float horizonBlend = smoothstep(0.45, 0.85, 1.0 - abs(dot(Vw, up)));
+  horizonBlend = mix(0.35, 0.65, horizonBlend);
+  vec3 skyColor = mix(skyZenith, skyHorizon, horizonBlend);
 
-
-
-// generate an approximate sky gradient around that color
-// zenith slightly darker, horizon slightly lighter, scaled by luminance
-vec3 skyZenith  = envColor * 0.85; // slightly darker upward
-vec3 skyHorizon = envColor * 1.05; // slightly lighter near horizon
-
-// horizon mix based on view angle
-vec3 Vworld = normalize(vPositionW - cameraPosition);
-if (isUnder) Vworld = -Vworld; // look "up" from underwater
-float horizonBlend = smoothstep(0.25, 0.95, 1.0 - abs(dot(Vworld, vec3(0.0, 1.0, 0.0))));
-vec3 skyColor = mix(skyZenith, skyHorizon, horizonBlend);
-
-
-float lumScale = clamp(envLum * 1.3, 0.3, 1.3);
-vec3 absorb = vec3(0.08, 0.045, 0.02) / lumScale;
-
-// slightly slower attenuation for realistic clarity
-vec3 transmittance = exp(-absorb * (4.0 * clamp(wdepth + 0.15, 0.0, 1.0)));
-
-
-
-  vec3 deepCol = mix(wDeepColor.rgb, wShallowColor.rgb, 0.3);
-  vec3 transColor = deepCol * transmittance;
-
-  // === foam ===
+  // --- foam (for above-water only) ------------------------------------------
   vec2 wind = normalize(windDir.xy + 1e-4);
   vec2 advect = wind * time * 0.03;
   float foamNoise = noise(vec3((vPositionW.xz + advect) * fNoiseScale, time * 0.5));
   float shallowFoam = 1.0 - smoothstep(0.15, 0.8, wdepth);
-  float crestFoam = smoothstep(0.4, 0.9, vCrest);
-  float foamMask = clamp(foamNoise * (0.4 * shallowFoam + 0.8 * crestFoam), 0.0, 1.0);
+  float crestFoam   = smoothstep(0.4, 0.9, vCrest);
+  float foamMask    = clamp(foamNoise * (0.4 * shallowFoam + 0.8 * crestFoam), 0.0, 1.0);
 
-  // === combine reflection and refraction ===
-  float roughness = 0.15;
-  Fr *= mix(1.0, 0.75, roughness);
-  vec3 fresnelMix = mix(transColor, reflColor, Fr * 0.85);
-  if (TIR) fresnelMix = mix(fresnelMix, reflColor, 0.6);
-  vec3 withFoam = mix(fresnelMix, wFoamColor.rgb, foamMask * 0.6);
-
-  // === ABOVE WATER ===
+  // --- ABOVE WATER: unchanged visual behavior --------------------------------
   if (!isUnder) {
+    vec3 deepCol = mix(wDeepColor.rgb, wShallowColor.rgb, 0.3);
+    float roughness = 0.15;
+    Fr *= mix(1.0, 0.75, roughness);
+
+    // transmitted color
+    vec3 absorbA = vec3(0.08, 0.045, 0.02) / clamp(envLum * 1.3, 0.3, 1.3);
+    vec3 trans   = exp(-absorbA * (4.0 * clamp(wdepth + 0.15, 0.0, 1.0)));
+    vec3 transCol = deepCol * trans;
+
+    vec3 fresnelMix = mix(transCol, reflColor, Fr * 0.85);
+    if (TIR) fresnelMix = mix(fresnelMix, reflColor, 0.6);
+    vec3 withFoam = mix(fresnelMix, wFoamColor.rgb, foamMask * 0.6);
+
     float airFade = smoothstep(0.0, 1.0, horizonBlend);
     vec3 airMix = mix(withFoam, skyColor, airFade * 0.12);
     float fog = exp(-pow(horizonBlend * 1.3, 2.0));
     gl_FragColor = vec4(mix(skyColor, airMix, fog), 0.9);
+    return;
   }
-  // === UNDERWATER ===
-  else {
-    // Snell's window weighting
-    vec3 viewDir = normalize(-V);
-    float cosView = dot(viewDir, vec3(0.0, 1.0, 0.0));
-    float snellWindow = smoothstep(0.45, 0.97, cosView);
 
-    // attenuation (Beer–Lambert)
-    float depthMeters = abs(vPositionW.y) * 0.25;
-    vec3 attenuation = exp(-absorb * depthMeters);
+  // =========================
+  //       UNDER WATER
+  // =========================
+  // From here on, ignore RTT content as a primary color source.
+  // Build color from (1) air-light through Snell's window and (2) single scattering.
 
-    // see *through* the water surface up at sky via flipped refraction
-    vec3 aboveColor = texture2D(reflectionSampler, refrUV).rgb;
-    aboveColor = mix(aboveColor, skyColor, 0.4);
-    aboveColor *= attenuation;
+  // 1) Path length inside water (camera → fragment)
+  float d = distance(cameraPosition, vPositionW);
 
-// --- better underwater scattering ---
-vec3 baseWaterColor = vec3(0.0, 0.45, 0.65);  // deep aqua
-float upness = clamp(dot(viewDir, vec3(0.0, 1.0, 0.0)), 0.0, 1.0);
-vec3 scatter = mix(vec3(0.0, 0.25, 0.4), baseWaterColor, pow(upness, 2.0));
-scatter *= attenuation * 0.9;
+  // 2) Spectral coefficients (tuned for clear blue-green; adjust to taste)
+  //    sigma_t = absorption + out-scatter. We bias toward blue transmission.
+  vec3 sigma_a = vec3(0.10, 0.055, 0.020);  // R, G, B absorption
+  vec3 sigma_s = vec3(0.010, 0.020, 0.035); // out-scatter (blue-ish)
+  vec3 sigma_t = sigma_a + sigma_s;
 
-vec3 color = mix(scatter, aboveColor, snellWindow * 1.1);
-color = mix(color, reflColor, Fr * 0.2);      // subtle reflection
+  // 3) Beer–Lambert extinction along the eye ray
+  vec3 Tvol = exp(-sigma_t * d);
 
+  // 4) Snell’s window mask based on view upness
+  float mu = clamp(dot(Vw, up), 0.0, 1.0);
+  float snellWindow = smoothstep(0.30, 0.96, mu);
 
+  // 5) Procedural "above-world" air-light entering through surface
+  //    Prefer sky gradient; optionally season with RTT sample a bit (but never drive it).
+  vec3 skyThrough = mix(skyColor, texture2D(reflectionSampler, refrUV).rgb, 0.20);
+  // Air-light after crossing thin interface (slight loss):
+  vec3 Tint = exp(-sigma_a * 0.5); // tiny sheet, artistic
+  vec3 L_window = skyThrough * Tint * snellWindow;
 
-    // total internal reflection darkening
-    if (TIR) color *= 0.35;
+  // 6) Single forward scattering (one-bounce)
+  //    Use HG-like phase favoring forward directions (g ~ 0.6)
+  float phase = phaseHG(mu, 0.6);
+  // In-scattered radiance magnitude depends on ambient downwelling; reuse sky luminance
+  float L_down = max(0.15, dot(skyColor, vec3(0.2126,0.7152,0.0722))) * 1.35;
+  vec3 waterHue = normalize(vec3(0.02, 0.25, 0.6) + wShallowColor.rgb * 0.25);
+  vec3 L_scatter = waterHue * L_down * phase * (1.0 - Tvol);
 
-    // soften edges
-    float edgeDarken = pow(1.0 - cosView, 2.0);
-    color *= mix(1.0, 0.65, edgeDarken);
+  // 7) Surface Fresnel from below (very subtle, prevents plastic look)
+  vec3 L_surface = reflColor * (Fr * 0.25) * snellWindow;
 
-    gl_FragColor = vec4(color, 0.85);
-  }
+  // 8) Combine: attenuate air-light by volume, then add in-scatter and subtle surface term
+  vec3 color = L_window * Tvol + L_scatter + L_surface;
+
+  // 9) Depth cue toward distance (soft haze)
+  float farHaze = clamp(d / (camMaxZ * 0.6), 0.0, 1.0);
+  vec3 hazeTint = waterHue * 0.25;
+  color = mix(color, hazeTint, farHaze * 0.35);
+
+  // 10) Edge darkening (view grazing)
+  float edge = pow(1.0 - mu, 2.0);
+  color *= mix(1.0, 0.72, edge);
+
+  // 11) Safety clamp
+  color = clamp(color, 0.0, 1.0);
+
+  gl_FragColor = vec4(color, 0.85);
 }
-
 `;
+
     }
 
     /** Dispose */
