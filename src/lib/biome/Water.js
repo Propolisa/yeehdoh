@@ -36,7 +36,7 @@ export class Water {
 
         // === Reflection RTT ===
         this.reflectionRTT = new MirrorTexture('water_reflection', { ratio: 0.5 }, scene, true);
-        this.reflectionRTT.adaptiveBlurKernel = 64;
+
         this.reflectionRTT.mirrorPlane = new Plane(0, -1, 0, this.level);
         this.reflectionRTT.refreshRate = 1;
         this.reflectionRTT.renderList = [];
@@ -126,7 +126,7 @@ export class Water {
                 iorWater: { value: 1.333, range: [1, 2, 0.001] },
                 iorAir: { value: 1.0, range: [0.5, 2, 0.001] },
                 refrScale: { value: 0.18, range: [0, 1, 0.01] },
-                reflScale: { value: 0.12, range: [0, 1, 0.01] },
+                reflScale: { value: 0.0, range: [0, 1, 0.01] },
                 maxDepth: { value: 5.0, range: [0, 50, 0.1] }
             },
 
@@ -156,9 +156,20 @@ export class Water {
         shaderMaterial.setFloat('camMinZ', scene.activeCamera.minZ);
         shaderMaterial.setFloat('camMaxZ', scene.activeCamera.maxZ);
         let gui;
-        if (WINDOW_CONTEXT.is_dev) {
-            gui = new GUI({ title: 'Water Shader' });
-        }
+        // === GUI reuse / setup ===
+
+if (WINDOW_CONTEXT.is_dev) {
+    // Reuse existing global GUI instance if available
+    if (window.__GLOBAL_LIL_GUI__) {
+        gui = window.__GLOBAL_LIL_GUI__;
+    } else {
+        gui = new GUI({ title: 'Water Shader Controls' });
+        window.__GLOBAL_LIL_GUI__ = gui;
+    }
+
+    gui = gui.addFolder('Water Shader');
+}
+
         // === GUI setup ===
 
         // helper for color4 uniforms
@@ -225,12 +236,15 @@ export class Water {
 
         // === Handle resizing ===
         const engine = scene.getEngine();
-        engine.onResizeObservable.add(() => {
-            this.refractionRTT.resize({ ratio: 0.75 });
-            this.reflectionRTT.resize({ ratio: 0.5 });
-            shaderMaterial.setTexture('refractionSampler', this.refractionRTT);
-            shaderMaterial.setTexture('reflectionSampler', this.reflectionRTT);
-        });
+      engine.onResizeObservable.add(() => {
+  const { reflectionRTT, refractionRTT, material, scene } = this;
+
+  refractionRTT.resize({ ratio: 0.75 });
+  reflectionRTT.resize({ ratio: 0.5 });
+
+
+});
+
 
         // === Link island ===
         const linkIsland = (m) => {
