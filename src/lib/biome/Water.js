@@ -109,6 +109,8 @@ export class Water {
         shaderMaterial.setFloat('fNoiseScale', 1.8);
         shaderMaterial.setFloat('maxDepth', 5.0);
 
+        
+
     shaderMaterial.setVector4('wDeepColor', new Vector4(0.02, 0.25, 0.4, 1.0)); // deeper blue-green
 shaderMaterial.setVector4('wShallowColor', new Vector4(0.03, 0.55, 0.7, 1.0)); // less cyan pop
 
@@ -136,6 +138,11 @@ shaderMaterial.setFloat('refrScale', 0.18);     // ↑ from 0.12 — more refrac
         const cc = scene.clearColor;
         shaderMaterial.setVector4('sceneColor', new Vector4(cc.r, cc.g, cc.b, 1.0));
         shaderMaterial.setFloat('exposure', scene.imageProcessingConfiguration.exposure ?? 1.0);
+shaderMaterial.setFloat('waveAmpScale', 1.0);     // master height multiplier
+shaderMaterial.setFloat('waveLengthScale', 1.0);  // stretch / shrink wavelength
+shaderMaterial.setFloat('waveSpeed', 1.0);        // temporal speed
+shaderMaterial.setFloat('waveSeed', 0.0);         // deterministic random offset
+shaderMaterial.setFloat('choppiness', 0.9);       // as before
 
         shaderMaterial.alpha = 1;
 
@@ -175,6 +182,7 @@ shaderMaterial.setFloat('refrScale', 0.18);     // ↑ from 0.12 — more refrac
         // === Maintain reflection lists ===
         const updateRenderLists = () => {
             const list = scene.meshes.filter((m) => m !== this.mesh && m.isVisible && m.isEnabled());
+  
             this.reflectionRTT.renderList = list;
               this.refractionRTT.renderList = list;
         };
@@ -250,8 +258,7 @@ shaderMaterial.setFloat('refrScale', 0.18);     // ↑ from 0.12 — more refrac
     /** Vertex + fragment shaders */
     _registerShaders() {
         // === Vertex shader unchanged (Gerstner) ===
-        Effect.ShadersStore['customVertexShader'] = `
-precision highp float;
+        Effect.ShadersStore['customVertexShader'] = `precision highp float;
 
 attribute vec3 position;
 attribute vec3 normal;
@@ -262,98 +269,121 @@ uniform mat4 worldView;
 uniform mat4 worldViewProjection;
 uniform float time;
 
+// === New tunables ===
+uniform float choppiness;      // global wave steepness
+uniform float waveAmpScale;    // global height multiplier
+uniform float waveLengthScale; // global wavelength multiplier
+uniform float waveSpeed;       // time speed scale
+uniform float waveSeed;        // random seed offset (for variation)
+uniform vec4  waveA;
+uniform vec4  waveB;
+uniform vec4  waveC;
+uniform vec4  waveD;
+uniform vec4  steepness;
+uniform vec4  windDir;
+
 varying vec3 vPositionW;
 varying vec4 vClipSpace;
 varying vec3 vPosVS;
 varying vec3 vNormalW;
 varying float vCrest;
 
-// ---------------- Gerstner Waves (Shadertoy exact port) ----------------
-#define NUM_WAVES 3
-#define SEA_LEVEL 0.0
-
-float hash11(float p){ p=fract(p*0.1031); p*=p+33.33; p*=p+p; return fract(p); }
+// ---------------------------------------------------------------------------
+// Hash + rotation utilities
+// ---------------------------------------------------------------------------
+float hash11(float p){ p=fract(p*0.1031+waveSeed*0.17); p*=p+33.33; p*=p+p; return fract(p); }
 mat2 rot(float a){ float c=cos(a), s=sin(a); return mat2(c,-s,s,c); }
 
+// ---------------------------------------------------------------------------
+// Wave evaluation
+// ---------------------------------------------------------------------------
 struct Wave { vec2 dir; float amp; float k; float w; float phase; };
 
-void initWaves(out Wave W[NUM_WAVES], float t){
-    float baseA = 0.7 + 0.2*sin(t*0.03);
-    vec2 wind = normalize(vec2(cos(baseA), sin(baseA)));
+void initWaves(out Wave W[5], float t){
+    // dominant direction: windDir.xy normalized
+    vec2 mainWind = normalize(windDir.xy + vec2(0.0001));
 
-    for(int i=0;i<NUM_WAVES;++i){
+    for (int i=0; i<5; ++i){
         float fi = float(i);
-        float r0 = hash11(10.0+fi);
-        float r1 = hash11(20.0+fi);
-        bool swell = (i < NUM_WAVES/3);
+        float r0 = hash11(10.0 + fi);
+        float r1 = hash11(20.0 + fi);
 
-        float L = swell ? mix(6.0,14.0,r0) : mix(0.18,2.8,r0);
-        float k = 6.28318530718 / L;
-        float w = sqrt(9.8*k);
+        bool swell = (i < 2);
+        float baseLen = swell ? mix(6.0, 14.0, r0) : mix(0.6, 3.0, r0);
+        baseLen *= waveLengthScale;
 
-        // Keep all waves roughly aligned to a dominant wind direction,
-// with only small angular deviation (±10–20 degrees).
-float baseDir = baseA; // main wind-aligned direction
-float deviation = radians(mix(-15.0, 15.0, r1)); // small directional spread
-float waveAngle = baseDir + deviation;
-vec2 dir = normalize(vec2(cos(waveAngle), sin(waveAngle)));
+        float k = 6.28318530718 / baseLen;
+        float w = sqrt(9.81 * k);
 
+        // Spread directions ±15°
+        float deviation = radians(mix(-15.0, 15.0, r1));
+        vec2 dir = normalize(rot(deviation) * mainWind);
 
-        float amp = swell ? mix(0.06,0.16,r0) : mix(0.006,0.035,r0);
-        W[i] = Wave(dir, amp, k, w, r1*6.28318);
+        float amp = (swell ? mix(0.06, 0.16, r0) : mix(0.008, 0.04, r0));
+        amp *= waveAmpScale;
+
+        float ph = r1 * 6.28318;
+        W[i] = Wave(dir, amp, k, w, ph);
     }
 }
 
-float heightAt(vec2 xz, float t, Wave W[NUM_WAVES]){
+// height + gradient
+float heightAt(vec2 xz, float t, Wave W[5]){
     float y=0.0;
-    for(int i=0;i<NUM_WAVES;++i){
+    for (int i=0;i<5;++i){
         Wave w=W[i];
-        float th = dot(w.dir,xz)*w.k - w.w*t + w.phase;
+        float th = dot(w.dir,xz)*w.k - w.w*t*waveSpeed + w.phase;
         y += w.amp * sin(th);
     }
-    return y + SEA_LEVEL;
+    return y;
 }
 
-vec2 heightGrad(vec2 xz, float t, Wave W[NUM_WAVES]){
-    vec2 g = vec2(0.0);
-    for(int i=0;i<NUM_WAVES;++i){
+vec2 heightGrad(vec2 xz, float t, Wave W[5]){
+    vec2 g=vec2(0.0);
+    for (int i=0;i<5;++i){
         Wave w=W[i];
-        float th = dot(w.dir,xz)*w.k - w.w*t + w.phase;
+        float th = dot(w.dir,xz)*w.k - w.w*t*waveSpeed + w.phase;
         g += w.amp * w.k * w.dir * cos(th);
     }
     return g;
 }
 
+// ---------------------------------------------------------------------------
+// Vertex main
+// ---------------------------------------------------------------------------
 void main(){
-    Wave W[NUM_WAVES];
+    Wave W[5];
     initWaves(W, time);
 
-    
-vec3 pos = position;
-vec2 grad = heightGrad(pos.xz, time, W);
-float baseY = pos.y;
-if (baseY > -1500.0) {  // adjust threshold depending on edgeDepth
-    float y = heightAt(pos.xz, time, W);
-    pos.y = y;
-}
+    vec3 pos = position;
+    vec2 grad = heightGrad(pos.xz, time, W);
 
-    // Normal from analytical slope
-    vec3 n = normalize(vec3(-grad.x, 1.0, -grad.y));
+    float baseY = pos.y;
+    if (baseY > -1500.0) {
+        float y = heightAt(pos.xz, time, W);
+        pos.y = y;
+    }
 
-    // A simple curvature proxy for foam
+    // Compute "choppy" horizontal displacement (approximate Gerstner)
+    pos.xz += grad * (choppiness * 0.3);
+
+    // Compute normal
+    vec3 n = normalize(vec3(-grad.x * choppiness, 1.0, -grad.y * choppiness));
+
+    // Crest (for foam)
     float slope = length(grad);
     float crest = smoothstep(0.8, 1.6, slope);
     vCrest = crest;
 
-    // Transformations
+    // World transforms
     vec4 worldPos = world * vec4(pos, 1.0);
     vPositionW = worldPos.xyz;
     vNormalW = normalize((world * vec4(n, 0.0)).xyz);
     vPosVS = (worldView * vec4(pos, 1.0)).xyz;
-    vec4 clip = worldViewProjection * vec4(pos, 1.0);
-    vClipSpace = clip;
-    gl_Position = clip;
+    vClipSpace = worldViewProjection * vec4(pos, 1.0);
+    gl_Position = vClipSpace;
 }
+
 `;
 
      Effect.ShadersStore['customFragmentShader'] = `
