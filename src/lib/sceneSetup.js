@@ -419,11 +419,12 @@ function setupTrees(scene) {
 
 export var createScene = function (engine, canvas) {
     const scene = new Scene(engine);
-
+    // Optional: tweak clear color to match horizon
+    scene.clearColor = new Color4(1, 0.8, 0.95, 1);
     window.GLOBAL_CACHE.scene = scene;
     scene.environmentIntensity = -5;
     setupWindShader(scene);
-    scene.clearColor = new Color3(0.75, 0.9, 0.85);
+   
     // --- Mobile: ArcRotateCamera for touch orbit ---
     const target = new Vector3(0, 0.5, 0); // center of island
     const radius = 120; // zoom distance so whole island fits with padding
@@ -1354,8 +1355,7 @@ function setupIslandFog(scene, islandMesh, waterRadius) {
     scene.fogDensity = density * 1.5; // tweak intensity visually
     scene.fogColor = new Color3(0.07, 0.35, 0.4); // oceanic teal
 
-    // Optional: tweak clear color to match horizon
-    scene.clearColor = new Color4(0.5, 0.8, 0.95, 1);
+
 
     console.log(`🌫 Fog tuned: starts at ${fogStart.toFixed(1)}, full by ${fogEnd.toFixed(1)}, density=${scene.fogDensity.toFixed(4)}`);
 }
