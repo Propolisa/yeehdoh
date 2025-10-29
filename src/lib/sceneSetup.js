@@ -969,7 +969,7 @@ export var createScene = function (engine, canvas) {
 
     //     water.material = shaderMaterial;
     setupTrees(scene);
-    setupIslandFog(scene, mesh, 400);
+
 
     // Build 3 messy variants once and keep them hidden for reuse
 
@@ -1081,7 +1081,7 @@ export var createScene = function (engine, canvas) {
         Plants.Animate.popScale(p.group, 35);
         p.group.scaling.setAll(s);
     }
-
+    setupIslandFog(scene, mesh, 400);
     new Water(scene);
     // 🧠 SPACEBAR for desktop
     window.addEventListener('keydown', (ev) => {
