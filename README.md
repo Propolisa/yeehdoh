@@ -6,6 +6,8 @@
 
 This game is for him, and for the small, funny things he loves.
 
+[https://propolisa.github.io/yeehdoh/](https://propolisa.github.io/yeehdoh/)
+
 ---
 
 ## What it is
