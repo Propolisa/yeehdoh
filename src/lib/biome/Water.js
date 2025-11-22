@@ -155,20 +155,59 @@ export class Water {
 
         shaderMaterial.setFloat('camMinZ', scene.activeCamera.minZ);
         shaderMaterial.setFloat('camMaxZ', scene.activeCamera.maxZ);
+        // === GUI reuse / setup (HMR safe) ===
         let gui;
-        // === GUI reuse / setup ===
 
-if (WINDOW_CONTEXT.is_dev) {
-    // Reuse existing global GUI instance if available
-    if (window.__GLOBAL_LIL_GUI__) {
-        gui = window.__GLOBAL_LIL_GUI__;
-    } else {
-        gui = new GUI({ title: 'Water Shader Controls' });
-        window.__GLOBAL_LIL_GUI__ = gui;
-    }
+        if (WINDOW_CONTEXT.is_dev) {
+            // Reuse single global lil-gui instance
+            if (window.__GLOBAL_LIL_GUI__) {
+                gui = window.__GLOBAL_LIL_GUI__;
+            } else {
+                gui = new GUI({ title: 'Procedural Controls', width: 360 });
+                window.__GLOBAL_LIL_GUI__ = gui;
+            }
 
-    gui = gui.addFolder('Water Shader');
-}
+            // --- Remove any existing “Water Shader” folder ---
+            const existing = gui.folders?.find?.((f) => f._title === '🌊 Water Shader' || f._title === 'Water Shader');
+            if (existing) existing.destroy();
+
+            // --- Create fresh folder ---
+            const folder = gui.addFolder('🌊 Water Shader');
+            this._guiFolder = folder;
+
+            // helper for color uniforms
+            const setColorUniform = (mat, key, vec) => mat.setVector4(key, vec);
+
+            // build nested parameter groups
+            for (const [groupName, group] of Object.entries(u)) {
+                const sub = folder.addFolder(groupName);
+                for (const [key, def] of Object.entries(group)) {
+                    const val = def.value;
+
+                    if (def.color) {
+                        // color controllers
+                        setColorUniform(shaderMaterial, key, val);
+                        const picker = { color: [val.x, val.y, val.z] };
+                        sub.addColor(picker, 'color')
+                            .name(key)
+                            .onChange((rgb) => {
+                                const [r, g, b] = rgb;
+                                setColorUniform(shaderMaterial, key, new Vector4(r, g, b, 1.0));
+                            });
+                    } else {
+                        // numeric controllers
+                        shaderMaterial.setFloat(key, val);
+                        if (def.range) {
+                            sub.add(def, 'value', def.range[0], def.range[1], def.range[2])
+                                .name(key)
+                                .onChange((v) => shaderMaterial.setFloat(key, v));
+                        }
+                    }
+                }
+            }
+
+            folder.open();
+        }
 
         // === GUI setup ===
 
@@ -236,15 +275,12 @@ if (WINDOW_CONTEXT.is_dev) {
 
         // === Handle resizing ===
         const engine = scene.getEngine();
-      engine.onResizeObservable.add(() => {
-  const { reflectionRTT, refractionRTT, material, scene } = this;
+        engine.onResizeObservable.add(() => {
+            const { reflectionRTT, refractionRTT, material, scene } = this;
 
-  refractionRTT.resize({ ratio: 0.75 });
-  reflectionRTT.resize({ ratio: 0.5 });
-
-
-});
-
+            refractionRTT.resize({ ratio: 0.75 });
+            reflectionRTT.resize({ ratio: 0.5 });
+        });
 
         // === Link island ===
         const linkIsland = (m) => {

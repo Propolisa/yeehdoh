@@ -2,14 +2,14 @@
 // https://forum.babylonjs.com/t/simple-stylized-water-shader/17672/8 phaselock
 // https://forum.babylonjs.com/t/simple-stylized-water-shader/17672/9 nevergrind
 
-import { Water } from '@/lib/biome/Water.js';
+import { Biome } from '@/lib/biome/Biome.js';
+import { biomes } from '@/lib/biome/biomes.js';
 import {
     Animation,
     ArcRotateCamera,
     Color3,
     Color4,
     CubicEase,
-    DirectionalLight,
     EasingFunction,
     HemisphericLight,
     MaterialPluginBase,
@@ -20,7 +20,6 @@ import {
     Ray,
     Scalar,
     Scene,
-    ShadowGenerator,
     StandardMaterial,
     Tools,
     Vector2,
@@ -30,7 +29,6 @@ import {
     VertexData
 } from '@babylonjs/core';
 import { COLORS } from './colors.js';
-import { makePalmFrond } from './geometry/emitters';
 import * as Plants from './plants/classes';
 
 window.GLOBAL_CACHE = {};
@@ -425,7 +423,7 @@ export var createScene = function (engine, canvas) {
     window.GLOBAL_CACHE.scene = scene;
     scene.environmentIntensity = -5;
     setupWindShader(scene);
-   
+
     // --- Mobile: ArcRotateCamera for touch orbit ---
     const target = new Vector3(0, 0.5, 0); // center of island
     const radius = 120; // zoom distance so whole island fits with padding
@@ -433,6 +431,7 @@ export var createScene = function (engine, canvas) {
     const beta = Math.PI / 2.4; // slightly above horizon
 
     const camera = new ArcRotateCamera('Cam', alpha, beta, radius, target, scene);
+    // camera.maxZ = 2000
     camera.attachControl(canvas, true);
 
     window.addEventListener('YEEHDOH_START', () => {
@@ -478,256 +477,256 @@ export var createScene = function (engine, canvas) {
     camera.attachControl(canvas, true);
     const hemi = new HemisphericLight('light', new Vector3(0.2, 1, 0.1), scene);
     hemi.intensity = 0.3;
-    // === Parameters ===
-    const SIZE = 100,
-        SUB = 128,
-        N = SUB + 1;
-    const SEEDS = 8,
-        ITER = Math.ceil(Math.log2(N));
+    // // === Parameters ===
+    // const SIZE = 100,
+    //     SUB = 128,
+    //     N = SUB + 1;
+    // const SEEDS = 8,
+    //     ITER = Math.ceil(Math.log2(N));
 
-    // === 1️⃣ Random seeds for jump flood ===
-    const seedX = [],
-        seedY = [];
-    for (let i = 0; i < SEEDS; i++) {
-        seedX.push(Math.random() * N);
-        seedY.push(Math.random() * N);
-    }
+    // // === 1️⃣ Random seeds for jump flood ===
+    // const seedX = [],
+    //     seedY = [];
+    // for (let i = 0; i < SEEDS; i++) {
+    //     seedX.push(Math.random() * N);
+    //     seedY.push(Math.random() * N);
+    // }
 
-    // === 2️⃣ Jump Flood Distance (simple scalar field) ===
-    const near = new Float32Array(N * N).fill(1e9);
-    const idx = (x, y) => y * N + x;
-    for (let i = 0; i < SEEDS; i++) near[idx(Math.floor(seedX[i]), Math.floor(seedY[i]))] = 0;
-    let step = N / 2;
-    while (step >= 1) {
-        for (let y = 0; y < N; y++) {
-            for (let x = 0; x < N; x++) {
-                const i = idx(x, y);
-                let best = near[i];
-                for (let dy = -1; dy <= 1; dy++) {
-                    for (let dx = -1; dx <= 1; dx++) {
-                        const nx = Math.floor(x + dx * step),
-                            ny = Math.floor(y + dy * step);
-                        if (nx < 0 || ny < 0 || nx >= N || ny >= N) continue;
-                        const n = near[idx(nx, ny)] + Math.hypot(dx * step, dy * step);
-                        if (n < best) best = n;
-                    }
-                }
-                near[i] = best;
-            }
-        }
-        step /= 2;
-    }
+    // // === 2️⃣ Jump Flood Distance (simple scalar field) ===
+    // const near = new Float32Array(N * N).fill(1e9);
+    // const idx = (x, y) => y * N + x;
+    // for (let i = 0; i < SEEDS; i++) near[idx(Math.floor(seedX[i]), Math.floor(seedY[i]))] = 0;
+    // let step = N / 2;
+    // while (step >= 1) {
+    //     for (let y = 0; y < N; y++) {
+    //         for (let x = 0; x < N; x++) {
+    //             const i = idx(x, y);
+    //             let best = near[i];
+    //             for (let dy = -1; dy <= 1; dy++) {
+    //                 for (let dx = -1; dx <= 1; dx++) {
+    //                     const nx = Math.floor(x + dx * step),
+    //                         ny = Math.floor(y + dy * step);
+    //                     if (nx < 0 || ny < 0 || nx >= N || ny >= N) continue;
+    //                     const n = near[idx(nx, ny)] + Math.hypot(dx * step, dy * step);
+    //                     if (n < best) best = n;
+    //                 }
+    //             }
+    //             near[i] = best;
+    //         }
+    //     }
+    //     step /= 2;
+    // }
 
-    // === 3️⃣ Multiscale sine noise (rotated + phased) ===
-    function multiSine(x, z) {
-        let n = 0,
-            amp = 1,
-            freq = 1,
-            rot = 0.5;
-        for (let o = 0; o < 5; o++) {
-            const a = freq * 0.25;
-            const px = x * a * Math.cos(rot) - z * a * Math.sin(rot);
-            const pz = x * a * Math.sin(rot) + z * a * Math.cos(rot);
-            n += (Math.sin(px + 3.1 * o) + Math.sin(pz + 1.7 * o)) * 0.5 * amp;
-            freq *= 1.9;
-            amp *= 0.55;
-            rot += 1.1; // change rotation per octave
-        }
-        return n;
-    }
-    // === 4️⃣ Build heightmap ===
-    const pos = new Float32Array(N * N * 3);
-    const cols = new Float32Array(N * N * 4);
+    // // === 3️⃣ Multiscale sine noise (rotated + phased) ===
+    // function multiSine(x, z) {
+    //     let n = 0,
+    //         amp = 1,
+    //         freq = 1,
+    //         rot = 0.5;
+    //     for (let o = 0; o < 5; o++) {
+    //         const a = freq * 0.25;
+    //         const px = x * a * Math.cos(rot) - z * a * Math.sin(rot);
+    //         const pz = x * a * Math.sin(rot) + z * a * Math.cos(rot);
+    //         n += (Math.sin(px + 3.1 * o) + Math.sin(pz + 1.7 * o)) * 0.5 * amp;
+    //         freq *= 1.9;
+    //         amp *= 0.55;
+    //         rot += 1.1; // change rotation per octave
+    //     }
+    //     return n;
+    // }
+    // // === 4️⃣ Build heightmap ===
+    // const pos = new Float32Array(N * N * 3);
+    // const cols = new Float32Array(N * N * 4);
 
-    let p = 0,
-        c = 0;
-    const maxD = (Math.sqrt(2) * N) / 2;
+    // let p = 0,
+    //     c = 0;
+    // const maxD = (Math.sqrt(2) * N) / 2;
 
-    // --- 🗺️ Terrain color sampler for vegetation ---
-    scene.getGroundColor = function (x, z) {
-        // normalize to grid space
-        const xn = (x / SIZE + 0.5) * (N - 1);
-        const zn = (z / SIZE + 0.5) * (N - 1);
+    // // --- 🗺️ Terrain color sampler for vegetation ---
+    // scene.getGroundColor = function (x, z) {
+    //     // normalize to grid space
+    //     const xn = (x / SIZE + 0.5) * (N - 1);
+    //     const zn = (z / SIZE + 0.5) * (N - 1);
 
-        const xi = Math.floor(xn);
-        const zi = Math.floor(zn);
-        if (xi < 0 || zi < 0 || xi >= N - 1 || zi >= N - 1) {
-            return new Color3(0.5, 0.5, 0.5);
-        }
+    //     const xi = Math.floor(xn);
+    //     const zi = Math.floor(zn);
+    //     if (xi < 0 || zi < 0 || xi >= N - 1 || zi >= N - 1) {
+    //         return new Color3(0.5, 0.5, 0.5);
+    //     }
 
-        const lerp = (a, b, t) => a + (b - a) * t;
-        const cAt = (x, z) => {
-            const i = (z * N + x) * 4;
-            return new Color3(cols[i], cols[i + 1], cols[i + 2]);
-        };
+    //     const lerp = (a, b, t) => a + (b - a) * t;
+    //     const cAt = (x, z) => {
+    //         const i = (z * N + x) * 4;
+    //         return new Color3(cols[i], cols[i + 1], cols[i + 2]);
+    //     };
 
-        const tx = xn - xi;
-        const tz = zn - zi;
+    //     const tx = xn - xi;
+    //     const tz = zn - zi;
 
-        const c00 = cAt(xi, zi);
-        const c10 = cAt(xi + 1, zi);
-        const c01 = cAt(xi, zi + 1);
-        const c11 = cAt(xi + 1, zi + 1);
+    //     const c00 = cAt(xi, zi);
+    //     const c10 = cAt(xi + 1, zi);
+    //     const c01 = cAt(xi, zi + 1);
+    //     const c11 = cAt(xi + 1, zi + 1);
 
-        // bilinear interpolate colors
-        const r = lerp(lerp(c00.r, c10.r, tx), lerp(c01.r, c11.r, tx), tz);
-        const g = lerp(lerp(c00.g, c10.g, tx), lerp(c01.g, c11.g, tx), tz);
-        const b = lerp(lerp(c00.b, c10.b, tx), lerp(c01.b, c11.b, tx), tz);
-        return new Color3(r, g, b);
-    };
+    //     // bilinear interpolate colors
+    //     const r = lerp(lerp(c00.r, c10.r, tx), lerp(c01.r, c11.r, tx), tz);
+    //     const g = lerp(lerp(c00.g, c10.g, tx), lerp(c01.g, c11.g, tx), tz);
+    //     const b = lerp(lerp(c00.b, c10.b, tx), lerp(c01.b, c11.b, tx), tz);
+    //     return new Color3(r, g, b);
+    // };
 
-    // Convenience: derive humidity (0 = dry, 1 = lush)
-    scene.getAridity = function (x, z) {
-        const c = scene.getGroundColor(x, z);
-        // bluer / greener = wetter; more red/yellow = drier
-        const wet = c.g + c.b * 0.5;
-        const dry = c.r;
-        return Scalar.Clamp(1.0 - (dry - wet + 0.5), 0, 1);
-    };
+    // // Convenience: derive humidity (0 = dry, 1 = lush)
+    // scene.getAridity = function (x, z) {
+    //     const c = scene.getGroundColor(x, z);
+    //     // bluer / greener = wetter; more red/yellow = drier
+    //     const wet = c.g + c.b * 0.5;
+    //     const dry = c.r;
+    //     return Scalar.Clamp(1.0 - (dry - wet + 0.5), 0, 1);
+    // };
 
-    // helper functions
-    function smoothstep(a, b, t) {
-        t = Math.min(1, Math.max(0, (t - a) / (b - a)));
-        return t * t * (3 - 2 * t);
-    }
-    function maskNoise(xn, zn) {
-        return (Math.sin(xn * 12.3) + Math.sin(zn * 15.7)) * 0.25;
-    }
+    // // helper functions
+    // function smoothstep(a, b, t) {
+    //     t = Math.min(1, Math.max(0, (t - a) / (b - a)));
+    //     return t * t * (3 - 2 * t);
+    // }
+    // function maskNoise(xn, zn) {
+    //     return (Math.sin(xn * 12.3) + Math.sin(zn * 15.7)) * 0.25;
+    // }
 
-    for (let y = 0; y < N; y++) {
-        for (let x = 0; x < N; x++) {
-            const xn = x / N - 0.5; // normalized X [-0.5, 0.5]
-            const zn = y / N - 0.5; // normalized Z [-0.5, 0.5]
-            const wx = xn * SIZE;
-            const wz = zn * SIZE;
-            const d = near[idx(x, y)] / maxD;
+    // for (let y = 0; y < N; y++) {
+    //     for (let x = 0; x < N; x++) {
+    //         const xn = x / N - 0.5; // normalized X [-0.5, 0.5]
+    //         const zn = y / N - 0.5; // normalized Z [-0.5, 0.5]
+    //         const wx = xn * SIZE;
+    //         const wz = zn * SIZE;
+    //         const d = near[idx(x, y)] / maxD;
 
-            // --- island shape (jump-flood + radial bias) ---
-            let island = Math.max(0, 1 - d * 1.8);
-            island = Math.pow(island, 2.5); // smoother core
+    //         // --- island shape (jump-flood + radial bias) ---
+    //         let island = Math.max(0, 1 - d * 1.8);
+    //         island = Math.pow(island, 2.5); // smoother core
 
-            // --- multiscale sine noise ---
-            let n = multiSine(x, y);
+    //         // --- multiscale sine noise ---
+    //         let n = multiSine(x, y);
 
-            // --- base height (more dramatic) ---
-            let base = island + n * 0.3 * (island + 0.2);
-            base = Math.sign(base) * Math.pow(Math.abs(base), 1.3);
-            let h = base * 4.2; // main amplitude boost
+    //         // --- base height (more dramatic) ---
+    //         let base = island + n * 0.3 * (island + 0.2);
+    //         base = Math.sign(base) * Math.pow(Math.abs(base), 1.3);
+    //         let h = base * 4.2; // main amplitude boost
 
-            // === circular falloff (lowers terrain, not flattens) ===
-            const r = Math.sqrt(xn * xn + zn * zn);
-            const noise = maskNoise(xn, zn) * 0.15;
-            const radius = 0.45 + noise; // outer fade radius
-            const fadeStart = 0.35 + noise * 0.5;
-            const t = Math.min(1, Math.max(0, (r - fadeStart) / (radius - fadeStart)));
-            const fade = Math.exp(-5.0 * t * t);
+    //         // === circular falloff (lowers terrain, not flattens) ===
+    //         const r = Math.sqrt(xn * xn + zn * zn);
+    //         const noise = maskNoise(xn, zn) * 0.15;
+    //         const radius = 0.45 + noise; // outer fade radius
+    //         const fadeStart = 0.35 + noise * 0.5;
+    //         const t = Math.min(1, Math.max(0, (r - fadeStart) / (radius - fadeStart)));
+    //         const fade = Math.exp(-5.0 * t * t);
 
-            // instead of scaling, lower terrain outward
-            const falloff = (1.0 - fade) * 8.0; // depth at outer rim
-            h -= falloff;
+    //         // instead of scaling, lower terrain outward
+    //         const falloff = (1.0 - fade) * 8.0; // depth at outer rim
+    //         h -= falloff;
 
-            // === smooth waterline depression ===
-            const waterLevel = 0.2;
-            const shoreWidth = 5.4;
-            const shoreDepth = 6.0;
-            let dh = h - waterLevel;
-            let shoreFade = Math.min(1, Math.max(0, (dh + shoreWidth) / shoreWidth));
-            shoreFade = shoreFade * shoreFade * (3 - 2 * shoreFade);
-            if (dh < shoreWidth) {
-                const punch = (1 - shoreFade) * shoreDepth;
-                h -= punch;
-            }
+    //         // === smooth waterline depression ===
+    //         const waterLevel = 0.2;
+    //         const shoreWidth = 5.4;
+    //         const shoreDepth = 6.0;
+    //         let dh = h - waterLevel;
+    //         let shoreFade = Math.min(1, Math.max(0, (dh + shoreWidth) / shoreWidth));
+    //         shoreFade = shoreFade * shoreFade * (3 - 2 * shoreFade);
+    //         if (dh < shoreWidth) {
+    //             const punch = (1 - shoreFade) * shoreDepth;
+    //             h -= punch;
+    //         }
 
-            // === deep-sea exaggeration ===
-            if (h < waterLevel) {
-                const t2 = (waterLevel - h) / waterLevel;
-                h -= t2 * 2.5; // make seafloor deeper
-            }
+    //         // === deep-sea exaggeration ===
+    //         if (h < waterLevel) {
+    //             const t2 = (waterLevel - h) / waterLevel;
+    //             h -= t2 * 2.5; // make seafloor deeper
+    //         }
 
-            // === store position + color ===
-            pos[p++] = wx;
-            pos[p++] = h;
-            pos[p++] = wz;
+    //         // === store position + color ===
+    //         pos[p++] = wx;
+    //         pos[p++] = h;
+    //         pos[p++] = wz;
 
-            // simple vertex color gradient by height
-            let rC = 0.6,
-                gC = 0.85,
-                bC = 0.6;
-            if (h < 0.2) {
-                // underwater
-                rC = 0.4;
-                gC = 0.6;
-                bC = 0.9;
-            } else if (h < 1.0) {
-                // shoreline
-                rC = 0.55;
-                gC = 0.8;
-                bC = 0.65;
-            } else if (h < 2.0) {
-                // hills
-                rC = 0.8;
-                gC = 0.7;
-                bC = 0.45;
-            } else {
-                // peaks
-                rC = 0.7;
-                gC = 0.6;
-                bC = 0.6;
-            }
-            cols[c++] = rC;
-            cols[c++] = gC;
-            cols[c++] = bC;
-            cols[c++] = 1.0;
-        }
-    }
+    //         // simple vertex color gradient by height
+    //         let rC = 0.6,
+    //             gC = 0.85,
+    //             bC = 0.6;
+    //         if (h < 0.2) {
+    //             // underwater
+    //             rC = 0.4;
+    //             gC = 0.6;
+    //             bC = 0.9;
+    //         } else if (h < 1.0) {
+    //             // shoreline
+    //             rC = 0.55;
+    //             gC = 0.8;
+    //             bC = 0.65;
+    //         } else if (h < 2.0) {
+    //             // hills
+    //             rC = 0.8;
+    //             gC = 0.7;
+    //             bC = 0.45;
+    //         } else {
+    //             // peaks
+    //             rC = 0.7;
+    //             gC = 0.6;
+    //             bC = 0.6;
+    //         }
+    //         cols[c++] = rC;
+    //         cols[c++] = gC;
+    //         cols[c++] = bC;
+    //         cols[c++] = 1.0;
+    //     }
+    // }
 
-    // === 5️⃣ Triangles ===
-    const idxs = [];
-    for (let y = 0; y < SUB; y++) {
-        for (let x = 0; x < SUB; x++) {
-            const i = y * N + x;
-            idxs.push(i, i + 1, i + N, i + 1, i + N + 1, i + N);
-        }
-    }
+    // // === 5️⃣ Triangles ===
+    // const idxs = [];
+    // for (let y = 0; y < SUB; y++) {
+    //     for (let x = 0; x < SUB; x++) {
+    //         const i = y * N + x;
+    //         idxs.push(i, i + 1, i + N, i + 1, i + N + 1, i + N);
+    //     }
+    // }
 
-    const mesh = new Mesh('island', scene);
-    const vd = new VertexData();
-    vd.positions = pos;
-    vd.indices = idxs;
-    vd.colors = cols;
-    vd.normals = [];
-    VertexData.ComputeNormals(pos, idxs, vd.normals);
-    vd.applyToMesh(mesh);
+    // const mesh = new Mesh('island', scene);
+    // const vd = new VertexData();
+    // vd.positions = pos;
+    // vd.indices = idxs;
+    // vd.colors = cols;
+    // vd.normals = [];
+    // VertexData.ComputeNormals(pos, idxs, vd.normals);
+    // vd.applyToMesh(mesh);
 
-    const mat = new StandardMaterial('mat', scene);
-    mat.vertexColorUsed = true;
-    mat.specularColor = Color3.Black();
-    mat.useFlatShading = true;
-    mesh.material = mat;
+    // const mat = new StandardMaterial('mat', scene);
+    // mat.vertexColorUsed = true;
+    // mat.specularColor = Color3.Black();
+    // mat.useFlatShading = true;
+    // mesh.material = mat;
 
-    // --- 🌞 Add sunlight and shadows (minimal) ---
-    const sun = new DirectionalLight('sun', new Vector3(-1, -2, -1), scene);
-    sun.position = new Vector3(50, 100, 0);
-    // --- ☁️ Soft, low-res shadows ---
-    const shadowGen = new ShadowGenerator(1024, sun); // lower res = faster & softer
-    shadowGen.useBlurExponentialShadowMap = true; // softer penumbra blur
-    shadowGen.blurKernel = 4; // increase for softness
-    shadowGen.blurScale = 5.0; // 1 = moderate blur, >1 = more diffuse
-    shadowGen.setDarkness(0.4);
-    shadowGen.bias = 0.001;
-    shadowGen.normalBias = 0.01;
-    // --- 🪴 Automatically register all new meshes as shadow casters if desired ---
-    scene.onNewMeshAddedObservable.add((m) => {
-        // skip invisible meshes or water
-        if (!m || m === mesh || m.name.toLowerCase().includes('water') || m.name.toLowerCase().includes('fish')) return;
+    // // --- 🌞 Add sunlight and shadows (minimal) ---
+    // const sun = new DirectionalLight('sun', new Vector3(-1, -2, -1), scene);
+    // sun.position = new Vector3(50, 100, 0);
+    // // --- ☁️ Soft, low-res shadows ---
+    // const shadowGen = new ShadowGenerator(1024, sun); // lower res = faster & softer
+    // shadowGen.useBlurExponentialShadowMap = true; // softer penumbra blur
+    // shadowGen.blurKernel = 4; // increase for softness
+    // shadowGen.blurScale = 5.0; // 1 = moderate blur, >1 = more diffuse
+    // shadowGen.setDarkness(0.4);
+    // shadowGen.bias = 0.001;
+    // shadowGen.normalBias = 0.01;
+    // // --- 🪴 Automatically register all new meshes as shadow casters if desired ---
+    // scene.onNewMeshAddedObservable.add((m) => {
+    //     // skip invisible meshes or water
+    //     if (!m || m === mesh || m.name.toLowerCase().includes('water') || m.name.toLowerCase().includes('fish')) return;
 
-        // heuristics: only cast shadows if not flat ground
-        if (m.isVisible && m.getTotalVertices() > 0 && !shadowGen.getShadowMap().renderList.includes(m)) {
-            shadowGen.addShadowCaster(m, true);
-        }
-    });
-    // Island receives shadows
-    mesh.receiveShadows = true;
+    //     // heuristics: only cast shadows if not flat ground
+    //     if (m.isVisible && m.getTotalVertices() > 0 && !shadowGen.getShadowMap().renderList.includes(m)) {
+    //         shadowGen.addShadowCaster(m, true);
+    //     }
+    // });
+    // // Island receives shadows
+    // mesh.receiveShadows = true;
 
     // Water plane
 
@@ -972,7 +971,6 @@ export var createScene = function (engine, canvas) {
     //     water.material = shaderMaterial;
     setupTrees(scene);
 
-
     // Build 3 messy variants once and keep them hidden for reuse
 
     window.GLOBAL_CACHE.WindMats = (() => {
@@ -996,43 +994,43 @@ export var createScene = function (engine, canvas) {
         };
     })();
 
-    // create 2–3 reusable unique frond meshes with variation
-    window.GLOBAL_CACHE.frondModels = [
-        makePalmFrond(scene, window.GLOBAL_CACHE.MAT.leaf, {
-            length: 3.5,
-            maxWidth: 0.55,
-            pinnae: 22,
-            droop: 0.7,
-            bendForward: 0.35,
-            tearChance: 0.12,
-            randomness: 0.2
-        }),
+    // // create 2–3 reusable unique frond meshes with variation
+    // window.GLOBAL_CACHE.frondModels = [
+    //     makePalmFrond(scene, window.GLOBAL_CACHE.MAT.leaf, {
+    //         length: 3.5,
+    //         maxWidth: 0.55,
+    //         pinnae: 22,
+    //         droop: 0.7,
+    //         bendForward: 0.35,
+    //         tearChance: 0.12,
+    //         randomness: 0.2
+    //     }),
 
-        makePalmFrond(scene, window.GLOBAL_CACHE.MAT.leaf, {
-            length: 4.0,
-            pinnae: 28,
-            maxWidth: 0.6,
-            droop: 0.9,
-            bendForward: 0.5,
-            shapePower: 1.6,
-            tearChance: 0.18,
-            randomness: 0.3
-        }),
+    //     makePalmFrond(scene, window.GLOBAL_CACHE.MAT.leaf, {
+    //         length: 4.0,
+    //         pinnae: 28,
+    //         maxWidth: 0.6,
+    //         droop: 0.9,
+    //         bendForward: 0.5,
+    //         shapePower: 1.6,
+    //         tearChance: 0.18,
+    //         randomness: 0.3
+    //     }),
 
-        makePalmFrond(scene, window.GLOBAL_CACHE.MAT.leaf, {
-            length: 3.0,
-            pinnae: 20,
-            maxWidth: 0.5,
-            droop: 0.65,
-            bendForward: 0.25,
-            tearChance: 0.25,
-            tearDepth: 0.6,
-            randomness: 0.4
-        })
-    ];
-    window.GLOBAL_CACHE.frondModels.forEach((f) => f.setEnabled(false));
+    //     makePalmFrond(scene, window.GLOBAL_CACHE.MAT.leaf, {
+    //         length: 3.0,
+    //         pinnae: 20,
+    //         maxWidth: 0.5,
+    //         droop: 0.65,
+    //         bendForward: 0.25,
+    //         tearChance: 0.25,
+    //         tearDepth: 0.6,
+    //         randomness: 0.4
+    //     })
+    // ];
+    // window.GLOBAL_CACHE.frondModels.forEach((f) => f.setEnabled(false));
 
-    Plants.growForest({ scene }, new Vector3(0, 0, 0), 40, 130, mesh);
+    // Plants.growForest({ scene }, new Vector3(0, 0, 0), 40, 130, mesh);
 
     function addRandomPlant() {
         const radius = 40;
@@ -1083,68 +1081,65 @@ export var createScene = function (engine, canvas) {
         Plants.Animate.popScale(p.group, 35);
         p.group.scaling.setAll(s);
     }
-    setupIslandFog(scene, mesh, 400);
-    new Water(scene);
+    // setupIslandFog(scene, mesh, 400);
+    let biome = new Biome(biomes.volcanic, scene);
+    biome.populate();
+
     // 🧠 SPACEBAR for desktop
     window.addEventListener('keydown', (ev) => {
         if (ev.code === 'Space') addRandomPlant();
     });
 
-  scene.onPointerObservable.add((pointerInfo) => {
-    if (pointerInfo.type !== PointerEventTypes.POINTERTAP) return;
+    scene.onPointerObservable.add((pointerInfo) => {
+        if (pointerInfo.type !== PointerEventTypes.POINTERTAP) return;
 
-    const evt = pointerInfo.event;
+        const evt = pointerInfo.event;
 
-    // === Click-to-plant only on tap ===
-    const pickRay = scene.createPickingRay(evt.clientX, evt.clientY, Matrix.Identity(), camera);
-    const groundPick = scene.pickWithRay(pickRay, (m) => m.name === "island");
+        // === Click-to-plant only on tap ===
+        const pickRay = scene.createPickingRay(evt.clientX, evt.clientY, Matrix.Identity(), camera);
+        const groundPick = scene.pickWithRay(pickRay, (m) => m.name === 'island');
 
-    if (!groundPick?.hit) return;
+        if (!groundPick?.hit) return;
 
-    const pos = groundPick.pickedPoint.clone();
-    const normal = groundPick.getNormal(true, true);
+        const pos = groundPick.pickedPoint.clone();
+        const normal = groundPick.getNormal(true, true);
 
-    // only upward-facing surface
-    if (normal?.y < 0.5) return;
+        // only upward-facing surface
+        if (normal?.y < 0.5) return;
 
-    // compute fertility context
-    function simpleNoise2D(x, z) {
-        return Math.sin(x * 0.11 + z * 0.07) + Math.sin(x * 0.05 - z * 0.13);
-    }
-    const n = simpleNoise2D(pos.x, pos.z);
-    const altitude = pos.y;
-    const food = Scalar.Clamp(
-        (0.6 + n * 0.4) * Scalar.SmoothStep(0.1, 1.5, 2.2 - altitude),
-        0,
-        1
-    );
-    const ctx = { altitude, food, moisture: (n + 2) / 4, fertility: food };
+        // compute fertility context
+        function simpleNoise2D(x, z) {
+            return Math.sin(x * 0.11 + z * 0.07) + Math.sin(x * 0.05 - z * 0.13);
+        }
+        const n = simpleNoise2D(pos.x, pos.z);
+        const altitude = pos.y;
+        const food = Scalar.Clamp((0.6 + n * 0.4) * Scalar.SmoothStep(0.1, 1.5, 2.2 - altitude), 0, 1);
+        const ctx = { altitude, food, moisture: (n + 2) / 4, fertility: food };
 
-    // random plant selection
-    const r = Math.random();
-    let p;
+        // random plant selection
+        const r = Math.random();
+        let p;
 
-    if (ctx.food < 0.35) {
-        if (r < 0.6) p = new Plants.Palm(scene, pos, ctx);
-        else p = new Plants.Bush(scene, pos, ctx);
-    } else if (ctx.food < 0.7) {
-        if (r < 0.3) p = new Plants.Palm(scene, pos, ctx);
-        else if (r < 0.75) p = new Plants.Tree(scene, pos, ctx);
-        else p = new Plants.Bush(scene, pos, ctx);
-    } else {
-        if (r < 0.4) p = new Plants.Tree(scene, pos, ctx);
-        else if (r < 0.7) p = new Plants.Palm(scene, pos, ctx);
-        else if (r < 0.9) p = new Plants.FlowerCluster(scene, pos, ctx);
-        else p = new Plants.Flower(scene, pos, ctx);
-    }
+        if (ctx.food < 0.35) {
+            if (r < 0.6) p = new Plants.Palm(scene, pos, ctx);
+            else p = new Plants.Bush(scene, pos, ctx);
+        } else if (ctx.food < 0.7) {
+            if (r < 0.3) p = new Plants.Palm(scene, pos, ctx);
+            else if (r < 0.75) p = new Plants.Tree(scene, pos, ctx);
+            else p = new Plants.Bush(scene, pos, ctx);
+        } else {
+            if (r < 0.4) p = new Plants.Tree(scene, pos, ctx);
+            else if (r < 0.7) p = new Plants.Palm(scene, pos, ctx);
+            else if (r < 0.9) p = new Plants.FlowerCluster(scene, pos, ctx);
+            else p = new Plants.Flower(scene, pos, ctx);
+        }
 
-    // animate appearance
-    const s = 3.5 + ctx.food * 3.5;
-    p.group.scaling.setAll(0);
-    Plants.Animate.popScale(p.group, 35);
-    p.group.scaling.setAll(s);
-});
-
+        // animate appearance
+        const s = 3.5 + ctx.food * 3.5;
+        p.group.scaling.setAll(0);
+        Plants.Animate.popScale(p.group, 35);
+        p.group.scaling.setAll(s);
+    });
 
     setupFishShader(scene);
     // const fishies = new FishSystemCute(scene, water, mesh, {
@@ -1360,8 +1355,6 @@ function setupIslandFog(scene, islandMesh, waterRadius) {
     scene.fogMode = Scene.FOGMODE_EXP2;
     scene.fogDensity = density * 1.5; // tweak intensity visually
     scene.fogColor = new Color3(0.07, 0.35, 0.4); // oceanic teal
-
-
 
     console.log(`🌫 Fog tuned: starts at ${fogStart.toFixed(1)}, full by ${fogEnd.toFixed(1)}, density=${scene.fogDensity.toFixed(4)}`);
 }

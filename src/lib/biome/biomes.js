@@ -46,15 +46,17 @@ export const biomes = {
       { class: "Tree", overrides: { scale: 4.5 } },
       { class: "Palm", overrides: { leafTint: [0.4, 0.8, 0.5] } },
       { class: "Bush", overrides: { density: 0.8 } },
-      {
-        class: "Fish",
-        overrides(ctx) {
-          return {
-            colorBias: [0.1 + ctx.altitude * 0.3, 0.6, 0.8],
-            speed: 0.5 + Math.random() * 0.3,
-          };
-        },
-      },
+      { class: "Flower", overrides: { density: 0.8 } },
+      { class: "FlowerCluster", overrides: { density: 0.8 } },
+      // {
+      //   class: "Fish",
+      //   overrides(ctx) {
+      //     return {
+      //       colorBias: [0.1 + ctx.altitude * 0.3, 0.6, 0.8],
+      //       speed: 0.5 + Math.random() * 0.3,
+      //     };
+      //   },
+      // },
     ],
   },
 
