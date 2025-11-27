@@ -1,6 +1,6 @@
 // biome/Landmass.js
 import { WINDOW_CONTEXT } from '@/lib/helpers'; // same as Water
-import { Color3, Engine, Mesh, RawTexture, Scene, StandardMaterial, Texture, VertexData } from '@babylonjs/core';
+import { Color3, EffectRenderer, EffectWrapper, Engine, Mesh, RawTexture, RenderTargetTexture, Scene, StandardMaterial, Texture, Vector2, VertexData } from '@babylonjs/core';
 import GUI from 'lil-gui';
 /**
  * A cubic noise
@@ -495,7 +495,7 @@ export class Landmass {
 
         // Build the initial terrain
         this._buildTerrain(params);
-      
+
         this.attachGUI();
     }
 
@@ -540,12 +540,27 @@ export class Landmass {
 
         // Build mesh from height map
         this._buildMeshFromHeightMap();
-          this.createHeightmapDebugTexture();
-        this._conformUnderwaterToCircularBasin({
-            waterline: 0,
-            wallWidth: this.size * 0.6,
-            maxDepth: this.size * 2,
-            wallExponent: 3
+        this.createHeightmapDebugTexture();
+        this.createSignedDistanceDebugTexture(0.5);
+        // this._conformUnderwaterToCircularBasin();
+    }
+
+    _waitForTexture(tex) {
+        return new Promise((resolve) => {
+            if (!tex) return resolve();
+
+            // Already ready?
+            if (tex.isReady()) {
+                resolve();
+                return;
+            }
+
+            // Poll until ready (Babylon textures often become ready next frame)
+            const check = () => {
+                if (tex.isReady()) resolve();
+                else requestAnimationFrame(check);
+            };
+            check();
         });
     }
 
@@ -635,297 +650,210 @@ export class Landmass {
         // After mesh build, optionally apply seabed shaping or other post-process
         // (you may call this later from GUI updates)
     }
-
     /**
-     * Conform underwater geometry to a circular seabed with a volcano-like wall.
-     * See your existing implementation.
+     * FINAL — AUTONOMOUS SEABED GENERATOR
+     * Uses SDF extrusion. Produces a NEW mesh and replaces this.mesh.
      */
-    /**
-     * NEW seabed extruder with full diagnostics.
-     * Rebuilds the mesh, extracts coastline, removes underwater tris,
-     * generates skirt, merges, computes normals, updates mesh.
-     */
-    /**
-     * Seabed generator using convex hull of near-water vertices.
-     * - Fast, robust, no adjacency graph
-     * - Works for smooth or flat shaded meshes
-     * - Builds a low-poly skirt from hull, extruded outward & downward
-     */
-    /**
-     * DEBUG: visualize where Marching Squares finds coastline crossings.
-     * Produces small spheres at every detected edge intersection.
-     * Does NOT modify the island mesh.
-     */
-   /**
- * Fully optimized, parameter-free seabed generator.
- * Uses marching-squares on the heightmap raster only.
- * Automatically:
- *  - extracts coastline loops at waterline = 0
- *  - extrudes a radial+downward seabed skirt
- *  - rebuilds the island mesh with merged geometry
- *
- * No GUI parameters. No inputs. Just works.
- */
-_conformUnderwaterToCircularBasin() {
-    const mesh = this.mesh;
-    const hm = this.heightMap;
-    if (!mesh || !hm) return;
+    _conformUnderwaterToCircularBasin() {
+        const mesh = this.mesh;
+        const hm = this.heightMap;
+        if (!mesh || !hm) return;
 
-    console.log("=== SEABED VIA OPTIMIZED MARCHING SQUARES ===");
+        console.log('=== SEABED (SDF) START ===');
 
-    const W = hm.xValues;
-    const H = hm.yValues;
-    const vals = hm.values;
-    const waterline = 0;
+        const W = hm.xValues;
+        const H = hm.yValues;
+        const vals = hm.values;
+        const size = this.size;
+        const half = size * 0.5;
 
-    const cell = this.size / (W - 1);
-    const half = this.size * 0.5;
+        // -------------------------------------------------------
+        // 1. Auto-detect waterline (15% lowest values = water)
+        // -------------------------------------------------------
+        const sorted = [...vals].sort((a, b) => a - b);
+        const waterline = sorted[Math.floor(sorted.length * 0.15)];
 
-    // -----------------------------------------
-    // 1) Build signed scalar field = (height - waterline)
-    // -----------------------------------------
-    const field = new Float32Array(W * H);
-    let minH = Infinity, maxH = -Infinity;
-    for (let i = 0; i < vals.length; i++) {
-        const h = vals[i];
-        field[i] = h - waterline;
-        if (h < minH) minH = h;
-        if (h > maxH) maxH = h;
-    }
+        let minH = sorted[0];
+        let maxH = sorted[sorted.length - 1];
 
-    // -----------------------------------------
-    // 2) Marching Squares — optimized
-    // Produces raw "segments": [x1,y1, x2,y2]
-    // -----------------------------------------
-    const segments = [];
+        console.log('autoWaterline =', waterline, '(minH:', minH, 'maxH:', maxH, ')');
 
-    const lerp = (a, b, fa, fb) => {
-        const t = fa / (fa - fb);
-        return a + t * (b - a);
-    };
+        // -------------------------------------------------------
+        // 2. Build land/water mask
+        //   mask[k] = 1 → water, 0 → land
+        // -------------------------------------------------------
+        const mask = new Uint8Array(W * H);
+        for (let k = 0; k < vals.length; k++) mask[k] = vals[k] < waterline ? 1 : 0;
 
-    let idx = (i,j) => field[i + j*W];
+        // -------------------------------------------------------
+        // 3. Compute SDF (signed distance field)
+        // -------------------------------------------------------
+        const sdf = this._edtSigned(mask, W, H);
 
-    for (let j = 0; j < H - 1; j++) {
-        const y0 = j * cell - half;
-        const y1 = (j+1) * cell - half;
+        // -------------------------------------------------------
+        // 4. Extract original mesh data and CONVERT TO JS ARRAYS
+        // -------------------------------------------------------
+        const pos0 = mesh.getVerticesData('position');
+        const col0 = mesh.getVerticesData('color') || new Float32Array((pos0.length / 3) * 4);
+        const ind0 = mesh.getIndices();
 
-        for (let i = 0; i < W - 1; i++) {
-            const v00 = idx(i, j);
-            const v10 = idx(i+1, j);
-            const v11 = idx(i+1, j+1);
-            const v01 = idx(i, j+1);
+        const outPos = Array.from(pos0);
+        const outCol = Array.from(col0);
+        const outInd = Array.from(ind0);
 
-            const mask =
-                (v00>0 ?1:0) |
-                (v10>0 ?2:0) |
-                (v11>0 ?4:0) |
-                (v01>0 ?8:0);
+        // Add vertex helper
+        const addV = (x, y, z, c) => {
+            outPos.push(x, y, z);
+            outCol.push(c[0], c[1], c[2], 1);
+            return outPos.length / 3 - 1;
+        };
 
-            if (mask === 0 || mask === 15) continue;
+        // -------------------------------------------------------
+        // 5. Build seabed vertices (one per heightmap sample)
+        // -------------------------------------------------------
+        const seabedIdx = new Array(W * H);
 
-            const x0 = i * cell - half;
-            const x1 = (i+1) * cell - half;
+        const maxDepth = size * 2;
+        const falloff = size * 0.35;
 
-            // gather up to two crossings
-            // store in a tiny fixed array
-            let px1 = 0, py1 = 0, px2 = 0, py2 = 0;
-            let found = 0;
+        const seabedY = (d) => {
+            // d > 0 = inside water → go down
+            // d < 0 = inside land  → use terrain height
+            if (d <= 0) return null;
+            return waterline - maxDepth * (1 - Math.exp(-d / falloff));
+        };
 
-            // left edge (v00→v01)
-            if ((v00>0)!==(v01>0)) {
-                const yy = lerp(y0, y1, v00, v01);
-                if (!found) { px1 = x0; py1 = yy; found=1; }
-                else { px2 = x0; py2 = yy; found=2; }
-            }
+        // seabed color
+        const seabedColor = [0.15, 0.19, 0.23];
 
-            // right edge (v10→v11)
-            if ((v10>0)!==(v11>0)) {
-                const yy = lerp(y0, y1, v10, v11);
-                if (!found) { px1 = x1; py1 = yy; found=1; }
-                else { px2 = x1; py2 = yy; found=2; }
-            }
+        for (let j = 0; j < H; j++) {
+            for (let i = 0; i < W; i++) {
+                const k = i + j * W;
+                const x = (i / (W - 1)) * size - half;
+                const z = (j / (H - 1)) * size - half;
 
-            // bottom edge (v00→v10)
-            if ((v00>0)!==(v10>0)) {
-                const xx = lerp(x0, x1, v00, v10);
-                if (!found) { px1 = xx; py1 = y0; found=1; }
-                else { px2 = xx; py2 = y0; found=2; }
-            }
+                let y;
 
-            // top edge (v01→v11)
-            if ((v01>0)!==(v11>0)) {
-                const xx = lerp(x0, x1, v01, v11);
-                if (!found) { px1 = xx; py1 = y1; found=1; }
-                else { px2 = xx; py2 = y1; found=2; }
-            }
+                if (mask[k] === 0) {
+                    // land → place seabed exactly at terrain height (flat underside)
+                    y = vals[k];
+                } else {
+                    // water → SDF extruded depth
+                    y = seabedY(sdf[k]);
+                    if (y === null) y = vals[k];
+                }
 
-            if (found === 2) {
-                segments.push([px1, py1, px2, py2]);
+                seabedIdx[k] = addV(x, y, z, seabedColor);
             }
         }
-    }
 
-    console.log(">>> marching segments:", segments.length);
+        // -------------------------------------------------------
+        // 6. Build watertight underside triangles
+        // -------------------------------------------------------
+        for (let j = 0; j < H - 1; j++) {
+            for (let i = 0; i < W - 1; i++) {
+                const k00 = seabedIdx[i + j * W];
+                const k10 = seabedIdx[i + 1 + j * W];
+                const k11 = seabedIdx[i + 1 + (j + 1) * W];
+                const k01 = seabedIdx[i + (j + 1) * W];
 
-    // -----------------------------------------
-    // 3) Connect segments → loops (optimized)
-    // Using spatial hashing for speed.
-    // -----------------------------------------
-    const EPS = 1e-3;
-    const inv = 1 / EPS;
-
-    const hash = (x,y)=> ((Math.round(x*inv)<<16) ^ Math.round(y*inv));
-
-    // map hash→points
-    const hmap = new Map();
-    for (const s of segments) {
-        const [x1,y1, x2,y2] = s;
-        const h1 = hash(x1,y1);
-        const h2 = hash(x2,y2);
-        if (!hmap.has(h1)) hmap.set(h1, []);
-        if (!hmap.has(h2)) hmap.set(h2, []);
-        hmap.get(h1).push([x2,y2]);
-        hmap.get(h2).push([x1,y1]);
-    }
-
-    const visited = new Set();
-    const loops = [];
-
-    for (const [hStart, nbrs] of hmap.entries()) {
-        if (visited.has(hStart)) continue;
-        if (!nbrs.length) continue;
-
-        const loop = [];
-        let h = hStart;
-        let prevX = null, prevY = null;
-
-        while (!visited.has(h)) {
-            visited.add(h);
-
-            // decode approximate point
-            const kx = ( (h>>16) / inv );
-            const ky = ( (h&0xffff) / inv );
-
-            loop.push([kx, ky]);
-
-            const list = hmap.get(h);
-            let next = list[0];
-            if (prevX !== null && list.length>1) {
-                // choose neighbor not equal to previous
-                const d0 = (next[0]-prevX)**2 + (next[1]-prevY)**2;
-                const d1 = (list[1][0]-prevX)**2 + (list[1][1]-prevY)**2;
-                if (d1 < d0) next = list[1];
-            }
-
-            prevX = kx; prevY = ky;
-            h = hash(next[0], next[1]);
-        }
-
-        if (loop.length>2) loops.push(loop);
-    }
-
-    console.log(">>> loops:", loops.length);
-
-    if (!loops.length) {
-        console.warn("No coastline loops detected.");
-        return;
-    }
-
-    // -----------------------------------------
-    // 4) Build the seabed skirt for each loop
-    // Fixed settings:
-    //   rings = 8
-    //   outward scale = 0.6 * size
-    //   downward depth = 2 * size
-    //   exponent = 3 for wall curve
-    // -----------------------------------------
-    const rings = 8;
-    const outward = this.size * 0.6;
-    const depth = this.size * 2;
-    const exp = 3;
-
-    // Acquire original mesh data
-    const pos0 = mesh.getVerticesData("position");
-    const col0 = mesh.getVerticesData("color");
-    const ind0 = mesh.getIndices();
-    const n0   = pos0.length / 3;
-
-    const outPos = pos0.slice();
-    const outCol = col0.slice();
-    const outInd = ind0.slice();
-
-    // helper to push vertices
-    const addV = (x,y,z, r,g,b,a)=>{
-        outPos.push(x,y,z);
-        outCol.push(r,g,b,a);
-        return (outPos.length/3)-1;
-    };
-
-    // wedge & depth function
-    for (const loop of loops) {
-        const cx = loop.reduce((s,p)=>s+p[0],0)/loop.length;
-        const cy = loop.reduce((s,p)=>s+p[1],0)/loop.length;
-
-        // build rings
-        const ringIdx = []; // ringIdx[r][i] = vertex index
-
-        for (let r=0; r<=rings; r++) {
-            const t = r / rings;
-            const rad = t**exp * outward;
-            const dy  = -t**exp * depth;
-
-            const arr = [];
-            for (let i=0; i<loop.length; i++) {
-                const [x0,y0] = loop[i];
-                const dx = x0 - cx;
-                const dz = y0 - cy;
-                const norm = Math.hypot(dx,dz) || 1;
-                const ux = dx/norm;
-                const uz = dz/norm;
-
-                const x = x0 + ux * rad;
-                const z = y0 + uz * rad;
-                const y = waterline + dy;
-
-                const idx = addV(x,y,z, 0.2,0.2,0.25,1);
-                arr.push(idx);
-            }
-            ringIdx[r] = arr;
-        }
-
-        // triangulate rings
-        for (let r=0; r<rings; r++) {
-            const A = ringIdx[r];
-            const B = ringIdx[r+1];
-            const L = A.length;
-
-            for (let i=0; i<L; i++) {
-                const i0 = A[i];
-                const i1 = A[(i+1)%L];
-                const i2 = B[i];
-                const i3 = B[(i+1)%L];
-
-                outInd.push(i0,i2,i1);
-                outInd.push(i1,i2,i3);
+                // Two triangles per cell
+                outInd.push(k00, k10, k11);
+                outInd.push(k00, k11, k01);
             }
         }
+
+        // -------------------------------------------------------
+        // 7. Recompute normals & build NEW mesh
+        // -------------------------------------------------------
+        const normals = [];
+        VertexData.ComputeNormals(outPos, outInd, normals);
+
+        const newMesh = new Mesh('island_with_seabed', this.scene);
+
+        const vd = new VertexData();
+        vd.positions = new Float32Array(outPos);
+        vd.indices = outInd;
+        vd.normals = new Float32Array(normals);
+        vd.colors = new Float32Array(outCol);
+        vd.applyToMesh(newMesh);
+
+        // Replace original mesh
+        mesh.dispose();
+        this.mesh = newMesh;
+
+        console.log('=== SEABED (SDF) COMPLETE ===');
     }
 
-    // -----------------------------------------
-    // 5) Compute normals and update mesh
-    // -----------------------------------------
-    const outNor = [];
-    VertexData.ComputeNormals(outPos, outInd, outNor);
+    _edtSigned(mask, W, H) {
+        // 0 = land 1 = water
+        const INF = 1e12;
 
-    mesh.updateVerticesData("position", outPos, true);
-    mesh.updateVerticesData("normal"  , outNor, true);
-    mesh.updateVerticesData("color"   , outCol, true);
-    mesh.updateIndices(outInd);
+        const f = new Float32Array(W * H);
 
-    console.log("=== SEABED COMPLETE ===");
-}
+        // init: coastline = 0, others = INF
+        for (let j = 0; j < H; j++) {
+            for (let i = 0; i < W; i++) {
+                const k = i + j * W;
+                const m = mask[k];
+                let edge = false;
+                if (i > 0 && mask[k - 1] !== m) edge = true;
+                if (i < W - 1 && mask[k + 1] !== m) edge = true;
+                if (j > 0 && mask[k - W] !== m) edge = true;
+                if (j < H - 1 && mask[k + W] !== m) edge = true;
+                f[k] = edge ? 0 : INF;
+            }
+        }
 
+        const edt1D = (f, n) => {
+            const d = new Float32Array(n),
+                v = new Int32Array(n),
+                z = new Float32Array(n + 1);
+            let k = 0;
+            v[0] = 0;
+            z[0] = -Infinity;
+            z[1] = Infinity;
+            for (let q = 1; q < n; q++) {
+                let s = (f[q] + q * q - (f[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k]);
+                while (s <= z[k]) {
+                    k--;
+                    s = (f[q] + q * q - (f[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k]);
+                }
+                k++;
+                v[k] = q;
+                z[k] = s;
+                z[k + 1] = Infinity;
+            }
+            k = 0;
+            for (let q = 0; q < n; q++) {
+                while (z[k + 1] < q) k++;
+                const dx = q - v[k];
+                d[q] = dx * dx + f[v[k]];
+            }
+            return d;
+        };
+
+        // pass 1 (horizontal)
+        let tmp = new Float32Array(W * H);
+        for (let j = 0; j < H; j++) {
+            const row = f.subarray(j * W, j * W + W);
+            tmp.set(edt1D(row, W), j * W);
+        }
+
+        // pass 2 (vertical)
+        for (let i = 0; i < W; i++) {
+            const col = new Float32Array(H);
+            for (let j = 0; j < H; j++) col[j] = tmp[i + j * W];
+            const d = edt1D(col, H);
+            for (let j = 0; j < H; j++) f[i + j * W] = Math.sqrt(d[j]);
+        }
+
+        // signed distance
+        const sdf = new Float32Array(W * H);
+        for (let i = 0; i < W * H; i++) sdf[i] = mask[i] ? f[i] : -f[i];
+
+        return sdf;
+    }
 
     /**
      * Create a normalized grayscale heightmap texture that appears in Babylon Inspector.
@@ -980,11 +908,230 @@ _conformUnderwaterToCircularBasin() {
         );
 
         tex.name = 'HeightmapDebugTexture';
-
+        this.heightmapDebugTexture = tex;
         console.log('Created HeightmapDebugTexture', tex, 'min =', minH, 'max =', maxH);
 
         return tex;
     }
+    _waitForEffect(effectWrapper) {
+        return new Promise((resolve) => {
+            if (effectWrapper.effect && effectWrapper.effect.isReady()) {
+                resolve();
+                return;
+            }
+            effectWrapper.onCompiled = () => resolve();
+            // force compilation
+            effectWrapper.effect._prepareEffect();
+        });
+    }
+
+    /**
+     * Create a signed distance field from the heightmap texture.
+     * Output:
+     *   this.signedDistanceDebugTexture  → RawTexture (R32F)
+     *   this.signedDistanceCPU           → Float32Array of size W*H
+     */
+    async createSignedDistanceDebugTexture(waterline = 0.5) {
+
+    if (!this.heightmapDebugTexture)
+        this.createHeightmapDebugTexture();
+
+    await this._waitForTexture(this.heightmapDebugTexture);
+
+    const scene   = this.scene;
+    const engine  = scene.getEngine();
+    const srcTex  = this.heightmapDebugTexture;
+
+    const W = srcTex.getSize().width;
+    const H = srcTex.getSize().height;
+    const resolution = new Vector2(W, H);
+
+    // =============================================================
+    // FIXED SHADERS (WebGL2 + MRT-safe)
+    // =============================================================
+
+    const seedFS = `
+        #version 300 es
+        precision highp float;
+
+        in vec2 vUV;
+        layout(location = 0) out vec4 fragColor;
+
+        uniform sampler2D heightmap;
+        uniform float waterline;
+        uniform vec2 resolution;
+
+        void main() {
+
+            float h = texture(heightmap, vUV).r;
+
+            vec2 uv = vUV * resolution;
+            bool isWater = h < waterline;
+
+            vec2 ext = isWater ? vec2(1e6) : uv;
+            vec2 inn = isWater ? uv : vec2(1e6);
+
+            fragColor = vec4(ext, inn);
+        }
+    `;
+
+    const jfaFS = `
+        #version 300 es
+        precision highp float;
+
+        in vec2 vUV;
+        layout(location = 0) out vec4 fragColor;
+
+        uniform sampler2D prev;
+        uniform float jump;
+        uniform vec2 resolution;
+
+        float d2(vec2 a, vec2 b) {
+            vec2 d = a - b;
+            return dot(d, d);
+        }
+
+        void main() {
+            vec2 uv = vUV * resolution;
+            vec4 root = texture(prev, vUV);
+
+            vec2 bestExt = root.xy;
+            vec2 bestInn = root.zw;
+
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dy = -1; dy <= 1; dy++) {
+
+                    vec2 offs = vec2(float(dx), float(dy)) * jump;
+                    vec2 uv2  = (uv + offs) / resolution;
+
+                    vec4 cand = texture(prev, uv2);
+
+                    if (d2(uv, cand.xy) < d2(uv, bestExt)) bestExt = cand.xy;
+                    if (d2(uv, cand.zw) < d2(uv, bestInn)) bestInn = cand.zw;
+                }
+            }
+
+            fragColor = vec4(bestExt, bestInn);
+        }
+    `;
+
+    const finalFS = `
+        #version 300 es
+        precision highp float;
+
+        in vec2 vUV;
+        layout(location = 0) out vec4 fragColor;
+
+        uniform sampler2D roots;
+        uniform vec2 resolution;
+
+        void main() {
+            vec2 uv = vUV * resolution;
+            vec4 r  = texture(roots, vUV);
+
+            float distExt = length(uv - r.xy);
+            float distInn = length(uv - r.zw);
+
+            float signedDist = distExt - distInn;
+
+            fragColor = vec4(signedDist, 0.0, 0.0, 1.0);
+        }
+    `;
+
+    // =============================================================
+    // RTT setup (single attachment)
+    // =============================================================
+
+    const seedRT  = new RenderTargetTexture("sdf_seed",  { width: W, height: H }, scene, false, true, Texture.BILINEAR_SAMPLINGMODE);
+    const jfaA    = new RenderTargetTexture("sdf_jfaA",  { width: W, height: H }, scene, false, true, Texture.BILINEAR_SAMPLINGMODE);
+    const jfaB    = new RenderTargetTexture("sdf_jfaB",  { width: W, height: H }, scene, false, true, Texture.BILINEAR_SAMPLINGMODE);
+    const finalRT = new RenderTargetTexture("sdf_final", { width: W, height: H }, scene, false, true, Texture.BILINEAR_SAMPLINGMODE);
+
+    const renderer = new EffectRenderer(engine);
+
+    // utility
+    const waitFor = wrapper =>
+        new Promise(res => {
+            wrapper.onCompiled = () => res();
+            wrapper.effect._prepareEffect();
+        });
+
+    // EffectWrappers
+    const seedFX = new EffectWrapper({
+        engine,
+        name: "seed",
+        fragmentShader: seedFS,
+        samplerNames: ["heightmap"],
+        uniformNames: ["waterline", "resolution"],
+    });
+
+    const jfaFX = new EffectWrapper({
+        engine,
+        name: "jfa",
+        fragmentShader: jfaFS,
+        samplerNames: ["prev"],
+        uniformNames: ["jump", "resolution"],
+    });
+
+    const finalFX = new EffectWrapper({
+        engine,
+        name: "final",
+        fragmentShader: finalFS,
+        samplerNames: ["roots"],
+        uniformNames: ["resolution"],
+    });
+
+    await waitFor(seedFX);
+    await waitFor(jfaFX);
+    await waitFor(finalFX);
+
+    // =============================================================
+    // Seed
+    // =============================================================
+
+    seedFX.effect.setTexture("heightmap", srcTex);
+    seedFX.effect.setFloat("waterline", waterline);
+    seedFX.effect.setVector2("resolution", resolution);
+
+    renderer.render(seedFX, seedRT);
+
+    // =============================================================
+    // JFA passes
+    // =============================================================
+
+    let src = seedRT;
+    let dst = jfaA;
+    const steps = Math.ceil(Math.log2(Math.max(W, H)));
+
+    for (let i = steps; i >= 0; i--) {
+        const jump = Math.pow(2, i);
+
+        jfaFX.effect.setTexture("prev", src);
+        jfaFX.effect.setFloat("jump", jump);
+        jfaFX.effect.setVector2("resolution", resolution);
+
+        renderer.render(jfaFX, dst);
+
+        const tmp = src;
+        src = dst;
+        dst = tmp === jfaA ? jfaB : jfaA;
+    }
+
+    // =============================================================
+    // Final
+    // =============================================================
+
+    finalFX.effect.setTexture("roots", src);
+    finalFX.effect.setVector2("resolution", resolution);
+
+    renderer.render(finalFX, finalRT);
+
+    this.signedDistanceDebugTexture = finalRT;
+
+    console.log("SDF generated", finalRT);
+
+    return finalRT;
+}
 
     /**
      * Adds a debug GUI for live tweaking of parameters.
