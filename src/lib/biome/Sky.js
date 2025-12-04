@@ -48,7 +48,7 @@ export class Sky {
     skyGradient.setColor3("bottomColor", Color3.FromInts(123, 173, 233));
     skyGradient.backFaceCulling = false;
     skybox.material = skyGradient;
-
+   {
     // 🌥️ 4K cloud textures
     const cloudImages = ["76.png", "77.png", "78.png", "79.png", "85.png", "86.png", "87.png"];
     const basePath = "/yeehdoh/images/clouds/";
@@ -109,5 +109,6 @@ export class Sky {
       // Start immediately
       sys.start();
     });
+    }
   }
 }

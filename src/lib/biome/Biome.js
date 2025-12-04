@@ -94,10 +94,10 @@ export class Biome {
         scene.activeLandmass = this.landmass;
 
         // Create water (if defined in ambience)
-        if (this.def.ambience?.water) {
-            this.water = new Water(scene, this.def.ambience.water);
-            scene.activeWater = this.water.mesh;
-        }
+        // if (this.def.ambience?.water) {
+        //     this.water = new Water(scene, this.def.ambience.water);
+        //     scene.activeWater = this.water.mesh;
+        // }
 
         // Create sky
         this.sky = new Sky(scene, this.def.ambience?.sky || {});
