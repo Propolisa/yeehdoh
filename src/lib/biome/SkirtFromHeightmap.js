@@ -1,148 +1,216 @@
-import { CircleEase, Color3, CubicEase, EasingFunction, EffectRenderer, EffectWrapper, ExponentialEase, Mesh, MeshBuilder, PBRMaterial, PowerEase, QuadraticEase, QuarticEase, QuinticEase, RenderTargetTexture, Scalar, ShaderMaterial, SineEase, StandardMaterial, Texture, Vector2, Vector3, VertexBuffer, VertexData } from "@babylonjs/core";
-
+import {
+    CircleEase,
+    Color3,
+    CubicEase,
+    EasingFunction,
+    EffectRenderer,
+    EffectWrapper,
+    ExponentialEase,
+    Mesh,
+    MeshBuilder,
+    PBRMaterial,
+    PowerEase,
+    QuadraticEase,
+    QuarticEase,
+    QuinticEase,
+    RenderTargetTexture,
+    Scalar,
+    ShaderMaterial,
+    SineEase,
+    StandardMaterial,
+    Texture,
+    Vector2,
+    Vector3,
+    VertexBuffer,
+    VertexData,
+} from "@babylonjs/core";
 
 export class SkirtForHeightmap {
-    constructor(texture, scene){
-        this.heightmap_texture = texture
-        this.scene = scene
-        this.camera = scene.activeCamera
+    constructor(texture, scene, { debug = false } = {}) {
+        this.options = { debug };
+        this.heightmap_texture = texture;
+        this.scene = scene;
+        this.camera = scene.activeCamera;
     }
 
-    async initialize(texture){
+    async initialize(texture) {
+        let scene = this.scene;
 
-    let scene = this.scene
-// show original heightmap
-    const planeSrc = MeshBuilder.CreatePlane("planeSrc", { size: 6 }, scene);
-    planeSrc.position.x = -12;
+        this.hexMesh = setupHexMesh(scene, this.camera, this);
+        const srcTex = texture || this.heightmap_texture;
 
-    const matSrc = new PBRMaterial("matSrc", scene);
-    planeSrc.material = matSrc;
-    scene._heightmapShrink = 1.0;
+        await this.runJFA(scene, srcTex, {
+            pad: 1.35,
+            heightMultiplier: 15.0,
+            targetMesh: this.hexMesh,
+        });
 
-    this.hexMesh = setupHexMesh(scene, this.camera, this)
-    const srcTex = texture || this.heightmap_texture 
-    this.runJFA(scene, srcTex, {
-                pad: 1.35,
-                heightMultiplier: 15.0,
-                targetMesh:  this.hexMesh
-            });
-      
-    registerOrReuseResource(scene, "source_island_heightmap", () => srcTex) 
-
-    this.initialized = true
-    return this.hexMesh;
-    
+        this.initialized = true;
+        return this.hexMesh;
     }
 
-    update(){
-         this.runJFA(this.scene,  registerOrReuseResource(this.scene, "source_island_heightmap", () => null), {
-                pad: 1.35,
-                heightMultiplier: 15.0,
-                targetMesh: this.hexMesh
-            });
-            
+    async update(texture) {
+        const tex = texture || registerOrReuseResource(
+            this.scene,
+            "source_island_heightmap",
+            () => null,
+        );
+
+        await this.runJFA(this.scene, tex, {
+            pad: 1.35,
+            heightMultiplier: 15.0,
+            targetMesh: this.hexMesh,
+        });
+        return this.hexMesh;
     }
 
     runJFA(scene, heightmapTex, config = {}) {
+        return new Promise((resolve) => {
+            const padCfg = config.pad ?? 1.0;
+            const heightMultiplier = config.heightMultiplier ?? 5.0;
 
-    const padCfg = config.pad ?? 1.0;
-    const heightMultiplier = config.heightMultiplier ?? 5.0;
+            // Make readable copy of original heightmap
+            this.originalReadable = makeReadableCopy(scene, heightmapTex);
 
-    // Make readable copy of original heightmap
-    this.originalReadable = makeReadableCopy(scene, heightmapTex);
-
-    // Apply padding (still using your existing padded-RT generator)
-    this.paddedOriginal = makePaddedTexture(scene, this.originalReadable, padCfg);
-    this.paddedTex      = makePaddedTexture(scene, heightmapTex, padCfg);
-
-    // --- NEW UNIFORM PADDING LOGIC -----------------------------------------
-    // original textures are square
-    const origSize   = heightmapTex.getSize().width;
-    const paddedSize = this.paddedTex.getSize().width;
-
-    // shrink factor in [0..1]: how large the original data is inside the padded texture
-    const padShrink = origSize / paddedSize;  // 1 = no padding, <1 = shrunk
-
-    // the world domain grows by this factor
-    const padScale = 1.0 / padShrink;
-    // ------------------------------------------------------------------------
-
-    const size = this.paddedTex.getSize();
-    const W = size.width;
-    const H = size.height;
-
-    const maxDim = Math.max(W, H);
-    const steps = Math.ceil(Math.log2(maxDim));
-
-    const stageRTs = [];
-
-    // Seed
-    const seedRT = makeNearestRT(scene, "seedRT", W, H);
-    seedPass(scene, this.paddedTex, seedRT);
-    stageRTs.push(seedRT);
-
-    // Preview
-    let startX = -12;
-    let dx = 6;
-    addPreviewPlane(scene, seedRT, startX + dx * 1, 6, "Seed");
-
-    // JFA steps
-    let jump = Math.pow(2, steps - 1);
-
-    for (let i = 0; i < steps; i++) {
-
-        const inputRT = stageRTs[i];
-        const outputRT = makeNearestRT(scene, `sampleRT_${i}`, W, H);
-        const isLast = (i === steps - 1);
-
-        jfaStep(scene, inputRT, outputRT, jump, isLast ? () => {
-
-            addDistancePlane(scene, outputRT, 0, -6);
-
-            // FINAL — build composite heightmap INCLUDING padScale
-            buildCompositeHeightmap(
+            // Apply padding
+            this.paddedOriginal = makePaddedTexture(
                 scene,
-                outputRT,
-                this.paddedOriginal,
-                heightMultiplier,
-                config.targetMesh,
-                padScale  // NEW
+                this.originalReadable,
+                padCfg,
             );
+            this.paddedTex = makePaddedTexture(scene, heightmapTex, padCfg);
 
-        } : null);
+            // --- NEW UNIFORM PADDING LOGIC -----------------------------------------
+            const origSize = heightmapTex.getSize().width;
+            const paddedSize = this.paddedTex.getSize().width;
 
-        stageRTs.push(outputRT);
-        addPreviewPlane(scene, outputRT, startX + dx * (i + 2), 6, "Step_" + jump);
+            // shrink factor in [0..1]
+            const padShrink = origSize / paddedSize;
+            const padScale = 1.0 / padShrink;
+            // ------------------------------------------------------------------------
 
-        jump /= 2;
-    }
+            const size = this.paddedTex.getSize();
+            const W = size.width;
+            const H = size.height;
+
+            const maxDim = Math.max(W, H);
+            const steps = Math.ceil(Math.log2(maxDim));
+
+            const stageRTs = [];
+
+            // SEED
+            const seedRT = makeNearestRT(scene, "seedRT", W, H);
+            seedPass(scene, this.paddedTex, seedRT);
+            stageRTs.push(seedRT);
+
+            // Preview the seed
+            let startX = -12;
+            let dx = 6;
+            if (this.options.debug) addPreviewPlane(scene, seedRT, startX + dx * 1, 6, "Seed");
+
+            // JFA LOOP
+            let jump = Math.pow(2, steps - 1);
+
+            // Keep reference to target mesh
+            const targetMesh = config.targetMesh;
+
+            const doStep = (i) => {
+                return new Promise((stepResolve) => {
+                    const inputRT = stageRTs[i];
+                    const outputRT = makeNearestRT(
+                        scene,
+                        `sampleRT_${i}`,
+                        W,
+                        H,
+                    );
+                    const isLast = i === steps - 1;
+
+                    jfaStep(scene, inputRT, outputRT, jump, async () => {
+                        // Last step → composite heightmap
+                        if (isLast) {
+                             if (this.options.debug) addDistancePlane(scene, outputRT, 0, -6);
+
+                            await buildCompositeHeightmap(
+                                scene,
+                                outputRT,
+                                this.paddedOriginal,
+                                heightMultiplier,
+                                targetMesh,
+                                padScale,
+                            );
+
+                            // ALL DONE
+                            stepResolve();
+                            return;
+                        }
+
+                        // Not last step → continue
+                        stepResolve();
+                    });
+
+                    stageRTs.push(outputRT);
+
+                     if (this.options.debug) addPreviewPlane(
+                        scene,
+                        outputRT,
+                        startX + dx * (i + 2),
+                        6,
+                        "Step_" + jump,
+                    );
+
+                    jump /= 2;
+                });
+            };
+
+            // Chain all steps sequentially
+            (async () => {
+                for (let i = 0; i < steps; i++) {
+                    await doStep(i);
+                }
+                resolve(targetMesh);
+            })();
+        }); // end Promise
     }
 }
 
-let heightmapStrength = 2
-let circleRadius = 5.0;
-let hexRadius = 0.1;
-const RESOURCES_CACHE = {}
-function registerOrReuseResource(scene, name, init, {clear=false}={}){
+let heightmapStrength = 3.5;
+let circleRadius = 12;
+let hexRadius = 0.15;
+const RESOURCES_CACHE = {};
+function registerOrReuseResource(
+    scene,
+    name,
+    init,
+    { clear = false, replace = false } = {},
+) {
     const engine = scene.getEngine();
-  
-    let res
-    res = RESOURCES_CACHE[name] 
-    
-    res = res || init()
-    
-    if (clear && res._bindFrameBuffer)  {
-        
-        scene.onBeforeRenderObservable.addOnce(() => {
-            // debugger
-        res._bindFrameBuffer();
-        engine.clear(res.clearColor || scene.clearColor, true, true, true);
-        engine.restoreDefaultFramebuffer();
-    });
+    let res = RESOURCES_CACHE[name];
+
+    // --- NEW: Allow forced replacement ---
+    if (replace && res) {
+        if (typeof res.dispose === "function") {
+            res.dispose();
+        }
+        res = null;
+        delete RESOURCES_CACHE[name];
     }
-    RESOURCES_CACHE[name] = res
-    
-    return res
+
+    // Create if missing
+    if (!res) {
+        res = init();
+        RESOURCES_CACHE[name] = res;
+    }
+
+    // Clear if requested
+    if (clear && res && res._bindFrameBuffer) {
+        scene.onBeforeRenderObservable.addOnce(() => {
+            res._bindFrameBuffer();
+            engine.clear(res.clearColor || scene.clearColor, true, true, true);
+            engine.restoreDefaultFramebuffer();
+        });
+    }
+
+    return res;
 }
 
 // ============================================================================
@@ -151,18 +219,24 @@ function registerOrReuseResource(scene, name, init, {clear=false}={}){
 function makeReadableCopy(scene, srcTex) {
     const engine = scene.getEngine();
     const size = srcTex.getSize();
-    
-    const rt = registerOrReuseResource(scene, "origReadableRT", () => new RenderTargetTexture(
-        "origReadableRT",
-        { width: size.width, height: size.height },
+
+    const rt = registerOrReuseResource(
         scene,
-        {
-            generateMipMaps: false,
-            generateDepthBuffer: false,
-            generateStencilBuffer: false,
-            samplingMode: Texture.NEAREST_NEAREST
-        }
-    ),  {clear:true});
+        "origReadableRT",
+        () =>
+            new RenderTargetTexture(
+                "origReadableRT",
+                { width: size.width, height: size.height },
+                scene,
+                {
+                    generateMipMaps: false,
+                    generateDepthBuffer: false,
+                    generateStencilBuffer: false,
+                    samplingMode: Texture.NEAREST_NEAREST,
+                },
+            ),
+        { clear: true },
+    );
 
     const fx = new EffectRenderer(engine);
 
@@ -178,7 +252,7 @@ function makeReadableCopy(scene, srcTex) {
     const wrap = new EffectWrapper({
         engine,
         fragmentShader: frag,
-        samplerNames: ["tex"]
+        samplerNames: ["tex"],
     });
 
     wrap.effect.executeWhenCompiled(() => {
@@ -189,26 +263,30 @@ function makeReadableCopy(scene, srcTex) {
     return rt;
 }
 
-
 // ============================================================================
 //  NEAREST-SAMPLING RENDER TARGET
 // ============================================================================
 function makeNearestRT(scene, name, W, H) {
-    const rt = registerOrReuseResource(scene, name, () => new RenderTargetTexture(
-        name,
-        { width: W, height: H },
+    const rt = registerOrReuseResource(
         scene,
-        {
-            generateDepthBuffer: false,
-            generateStencilBuffer: false,
-            generateMipMaps: false,
-            samplingMode: Texture.NEAREST_NEAREST
-        }
-    ), {clear:true});
+        name,
+        () =>
+            new RenderTargetTexture(
+                name,
+                { width: W, height: H },
+                scene,
+                {
+                    generateDepthBuffer: false,
+                    generateStencilBuffer: false,
+                    generateMipMaps: false,
+                    samplingMode: Texture.NEAREST_NEAREST,
+                },
+            ),
+        { clear: true },
+    );
     rt.wrapU = rt.wrapV = Texture.CLAMP_ADDRESSMODE;
     return rt;
 }
-
 
 // ============================================================================
 //  PAD TEXTURE
@@ -266,7 +344,7 @@ function makePaddedTexture(scene, srcTex, padCfg) {
         engine,
         fragmentShader: frag,
         samplerNames: ["src"],
-        uniformNames: ["srcSize", "dstSize"]
+        uniformNames: ["srcSize", "dstSize"],
     });
 
     wrap.effect.executeWhenCompiled(() => {
@@ -278,7 +356,6 @@ function makePaddedTexture(scene, srcTex, padCfg) {
 
     return paddedRT;
 }
-
 
 // ============================================================================
 //  SEED PASS
@@ -320,7 +397,7 @@ void main() {
     const wrap = new EffectWrapper({
         engine,
         fragmentShader: frag,
-        samplerNames: ["tex"]
+        samplerNames: ["tex"],
     });
 
     wrap.effect.executeWhenCompiled(() => {
@@ -328,7 +405,6 @@ void main() {
         fx.render(wrap, outRT);
     });
 }
-
 
 // ============================================================================
 //  JFA STEP
@@ -399,12 +475,11 @@ void main() {
 }
 `;
 
-
     const wrap = new EffectWrapper({
         engine,
         fragmentShader: frag,
         samplerNames: ["tex"],
-        uniformNames: ["jump", "res"]
+        uniformNames: ["jump", "res"],
     });
 
     const sz = inRT.getSize();
@@ -425,14 +500,13 @@ async function buildCompositeHeightmap(
     originalRT,
     heightMultiplier,
     targetMesh,
-    padScale = 1.0            // NEW
+    padScale = 1.0, // NEW
 ) {
-
     const size = finalRT.getSize();
     const W = size.width;
     const H = size.height;
 
-    const sdfPixels  = await finalRT.readPixels();
+    const sdfPixels = await finalRT.readPixels();
     const origPixels = await originalRT.readPixels();
 
     if (!sdfPixels || !origPixels) {
@@ -440,7 +514,8 @@ async function buildCompositeHeightmap(
         return;
     }
 
-    const isByte = sdfPixels instanceof Uint8Array || sdfPixels instanceof Uint8ClampedArray;
+    const isByte = sdfPixels instanceof Uint8Array ||
+        sdfPixels instanceof Uint8ClampedArray;
     const composite = new Float32Array(W * H);
 
     // config
@@ -453,10 +528,8 @@ async function buildCompositeHeightmap(
     const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
     const valid = (v) => v.x > -1e8 && v.y > -1e8;
 
-
     for (let y = 0; y < H; y++) {
         for (let x = 0; x < W; x++) {
-
             const i = (y * W + x) * 4;
 
             let hOrig = origPixels[i] / 255.0;
@@ -468,25 +541,28 @@ async function buildCompositeHeightmap(
             let a = sdfPixels[i + 3];
 
             if (isByte) {
-                r /= 255; g /= 255; b /= 255; a /= 255;
+                r /= 255;
+                g /= 255;
+                b /= 255;
+                a /= 255;
             }
 
             const uv = { x: x / (W - 1), y: y / (H - 1) };
-           const ext  = { x: r, y: g };
-const intr = { x: b, y: a };
+            const ext = { x: r, y: g };
+            const intr = { x: b, y: a };
 
-let extD = valid(ext)  ? dist(uv, ext)  : 1e6;
-let intD = valid(intr) ? dist(uv, intr) : 1e6;
+            let extD = valid(ext) ? dist(uv, ext) : 1e6;
+            let intD = valid(intr) ? dist(uv, intr) : 1e6;
 
-const sdf = extD - intD;
-
+            const sdf = extD - intD;
 
             // OUTSIDE height
             let acc = 0;
             for (let k = 0; k < isoSamples; k++) {
                 const iso = k * isoStep;
                 const shifted = sdf - iso;
-                const falloff = 1.0 - Math.exp(-falloffSharpness * Math.abs(shifted));
+                const falloff = 1.0 -
+                    Math.exp(-falloffSharpness * Math.abs(shifted));
                 acc += shifted * falloff;
             }
             const outsideHeight = (acc / isoSamples) * heightMultiplier;
@@ -495,11 +571,10 @@ const sdf = extD - intD;
             const blend = Scalar.Clamp(
                 (sdf / blendWidth + 1) * 0.5,
                 0,
-                1
+                1,
             );
 
-            composite[idx++] =
-                hOrig * blend +
+            composite[idx++] = hOrig * blend +
                 outsideHeight * (1.0 - blend);
         }
     }
@@ -509,8 +584,8 @@ const sdf = extD - intD;
         width: W,
         height: H,
         data: composite,
-        padScale,                   // NEW
-
+        padScale, // NEW
+        scale: 1,
         // bilinear sample
         sampleUV(u, v) {
             u = Scalar.Clamp(u, 0, 1);
@@ -537,21 +612,25 @@ const sdf = extD - intD;
         },
 
         // NEW world→UV mapping using shrink-factor
-        sampleWorld(pos, mapping) {
-            const { center, size } = mapping;
-            const local = pos.subtract(center);
-
-            // the patch grows by padScale, so UVs shrink by that amount
-            const u = (local.x / (size.x * this.padScale)) + 0.5;
-            const v = (local.z / (size.z * this.padScale)) + 0.5;
+        sampleWorld(pos) {
+            const u = Scalar.InverseLerp(
+                this.worldBounds.minX,
+                this.worldBounds.maxX,
+                pos.x,
+            );
+            const v = Scalar.InverseLerp(
+                this.worldBounds.minZ,
+                this.worldBounds.maxZ,
+                pos.z,
+            );
 
             return this.sampleUV(u, v);
-        }
+        },
     };
 
     if (targetMesh) {
-    applyHeightmapToMesh(targetMesh, { strength: heightmapStrength });
-}
+        applyHeightmapToMesh(targetMesh, { strength: heightmapStrength });
+    }
 
     console.log("Composite heightmap ready:", scene.compositeHeightmap);
     // =====================================================================
@@ -568,9 +647,9 @@ const sdf = extD - intD;
                 height: 20,
                 subdivisionsX: W - 1,
                 subdivisionsY: H - 1,
-                updatable: true
+                updatable: true,
             },
-            scene
+            scene,
         );
 
         ground.bakeCurrentTransformIntoVertices();
@@ -579,7 +658,7 @@ const sdf = extD - intD;
         // Apply the composite heightmap additively.
         // `composite` already includes heightMultiplier, so strength = 1 reproduces original look.
         applyHeightmapToMesh(ground, {
-            strength:heightmapStrength
+            strength: heightmapStrength,
             // auto mapping (Option 3) will use the ground's bounding box,
             // which matches the original width/height of 20x20.
         });
@@ -596,10 +675,7 @@ const sdf = extD - intD;
     }
 }
 
-
-
-  // --- NEW: helper to warp + reapply heightmap when sliders change ---
-  
+// --- NEW: helper to warp + reapply heightmap when sliders change ---
 
 // ============================================================================
 //  APPLY HEIGHTMAP TO ANY MESH (OPTION 3 WITH OPTION 2 OVERRIDE)
@@ -612,6 +688,13 @@ export function applyHeightmapToMesh(mesh, options = {}) {
         console.error("Composite heightmap not ready yet.");
         return;
     }
+
+    H.worldBounds = {
+        minX: -10, // or extract from terrain placement
+        maxX: 10,
+        minZ: -10,
+        maxZ: 10,
+    };
 
     const strength = options.strength ?? 1.0;
 
@@ -628,9 +711,9 @@ export function applyHeightmapToMesh(mesh, options = {}) {
             new Vector3(
                 positions[i],
                 positions[i + 1],
-                positions[i + 2]
+                positions[i + 2],
             ),
-            world
+            world,
         );
         if (wp.x < minX) minX = wp.x;
         if (wp.x > maxX) maxX = wp.x;
@@ -641,7 +724,7 @@ export function applyHeightmapToMesh(mesh, options = {}) {
     const center = new Vector3(
         (minX + maxX) * 0.5,
         0,
-        (minZ + maxZ) * 0.5
+        (minZ + maxZ) * 0.5,
     );
     const size = new Vector3(maxX - minX, 0, maxZ - minZ);
 
@@ -649,15 +732,14 @@ export function applyHeightmapToMesh(mesh, options = {}) {
     // APPLY HEIGHT — always baseline Y = 0
     // =========================================================
     for (let i = 0; i < positions.length; i += 3) {
-
         // World position BEFORE modification
         const wp = Vector3.TransformCoordinates(
             new Vector3(
                 positions[i],
                 positions[i + 1],
-                positions[i + 2]
+                positions[i + 2],
             ),
-            world
+            world,
         );
 
         // Sample heightmap
@@ -676,20 +758,24 @@ export function applyHeightmapToMesh(mesh, options = {}) {
     mesh.setVerticesData(VertexBuffer.NormalKind, normals);
 }
 
-
-
-
 // ============================================================================
 //  PREVIEW PLANES
 // ============================================================================
 function addPreviewPlane(scene, rt, x, y, label) {
-    const plane = registerOrReuseResource(scene, "plane_" + label, () => MeshBuilder.CreatePlane("plane_" + label, { size: 5 }, scene));
+    const plane = registerOrReuseResource(
+        scene,
+        "plane_" + label,
+        () => MeshBuilder.CreatePlane("plane_" + label, { size: 5 }, scene),
+    );
     plane.position.x = x;
     plane.position.y = y;
 
-    const mat =  registerOrReuseResource(scene, "prev_" + label, () => new ShaderMaterial("prev_" + label, scene,
-        {
-            vertexSource: `
+    const mat = registerOrReuseResource(
+        scene,
+        "prev_" + label,
+        () =>
+            new ShaderMaterial("prev_" + label, scene, {
+                vertexSource: `
                 precision highp float;
                 attribute vec3 position;
                 attribute vec2 uv;
@@ -700,7 +786,7 @@ function addPreviewPlane(scene, rt, x, y, label) {
                     gl_Position = worldViewProjection * vec4(position,1.0);
                 }
             `,
-            fragmentSource: `
+                fragmentSource: `
                 precision highp float;
                 varying vec2 vUV;
                 uniform sampler2D tex;
@@ -710,31 +796,36 @@ function addPreviewPlane(scene, rt, x, y, label) {
                     float d = length(r.xy - vUV);
                     gl_FragColor = vec4(d, d*0.2, 1.0-d, 1.0);
                 }
-            `
-        },
-        {
-            attributes: ["position", "uv"],
-            uniforms: ["worldViewProjection"],
-            samplers: ["tex"]
-        }
-    ));
+            `,
+            }, {
+                attributes: ["position", "uv"],
+                uniforms: ["worldViewProjection"],
+                samplers: ["tex"],
+            }),
+    );
 
     mat.setTexture("tex", rt);
     plane.material = mat;
 }
 
-
 // ============================================================================
 //  SIGNED DISTANCE VISUALIZER
 // ============================================================================
 function addDistancePlane(scene, rt, x, y) {
-    const plane = registerOrReuseResource(scene, "distVis",() => MeshBuilder.CreatePlane("distVis", { size: 8 }, scene));
+    const plane = registerOrReuseResource(
+        scene,
+        "distVis",
+        () => MeshBuilder.CreatePlane("distVis", { size: 8 }, scene),
+    );
     plane.position.x = x;
     plane.position.y = y;
 
-    const mat = registerOrReuseResource(scene, "distVisMat", () => new ShaderMaterial("distVisMat", scene,
-        {
-            vertexSource: `
+    const mat = registerOrReuseResource(
+        scene,
+        "distVisMat",
+        () =>
+            new ShaderMaterial("distVisMat", scene, {
+                vertexSource: `
                 precision highp float;
                 attribute vec3 position;
                 attribute vec2 uv;
@@ -745,7 +836,7 @@ function addDistancePlane(scene, rt, x, y) {
                     gl_Position = worldViewProjection * vec4(position,1.0);
                 }
             `,
-            fragmentSource: `
+                fragmentSource: `
 precision highp float;
 
 varying vec2 vUV;
@@ -779,15 +870,13 @@ void main(){
 
     gl_FragColor = vec4(finalColor,1.0);
 }
-`
-
-        },
-        {
-            attributes: ["position", "uv"],
-            uniforms: ["worldViewProjection"],
-            samplers: ["tex"]
-        }
-    ));
+`,
+            }, {
+                attributes: ["position", "uv"],
+                uniforms: ["worldViewProjection"],
+                samplers: ["tex"],
+            }),
+    );
 
     mat.setTexture("tex", rt);
     plane.material = mat;
@@ -795,9 +884,6 @@ void main(){
 }
 
 function setupHexMesh(scene, camera, skirt) {
-
-
-
     // ====== Helpers ======
     function hexToCartesian(q, r, size) {
         const x = size * (Math.sqrt(3) * (q + r / 2));
@@ -810,7 +896,9 @@ function setupHexMesh(scene, camera, skirt) {
         const clipped = [];
         const len = points.length;
 
-        function isInside(p) { return p.length() <= radius + 1e-7; }
+        function isInside(p) {
+            return p.length() <= radius + 1e-7;
+        }
 
         function intersect(p1, p2) {
             const d = p2.subtract(p1);
@@ -854,94 +942,139 @@ function setupHexMesh(scene, camera, skirt) {
         return clipped;
     }
 
-    // ====== 1) Build lattice ======
-    const centers = [];
-    const maxRing = Math.ceil(circleRadius / (hexRadius * 1.5)) + 2;
-    for (let q = -maxRing; q <= maxRing; q++) {
-        for (let r = -maxRing; r <= maxRing; r++) {
-            centers.push({ q, r, pos: hexToCartesian(q, r, hexRadius) });
-        }
-    }
-
-    // ====== 2) Triangulate ======
-    const allVerts = [];
-    const allIndices = [];
-    const vertexMap = new Map();
-    const triIdToIndex = new Map();
-
-    function getVertexIndex(v) {
-        const key = `${v.x.toFixed(5)},${v.y.toFixed(5)}`;
-        if (vertexMap.has(key)) return vertexMap.get(key);
-        const idx = allVerts.length / 3;
-        allVerts.push(v.x, 0, v.y);
-        vertexMap.set(key, idx);
-        return idx;
-    }
-
-    for (const { q, r, pos: c } of centers) {
-        const corners = [];
-        for (let i = 0; i < 6; i++) {
-            const a = Math.PI / 3 * i + Math.PI / 6;
-            corners.push(new Vector2(
-                c.x + hexRadius * Math.cos(a),
-                c.y + hexRadius * Math.sin(a)
-            ));
+    let allVerts, allIndices, vdata, mesh;
+    function generateGeometry() {
+        // ====== 1) Build lattice ======
+        const centers = [];
+        const maxRing = Math.ceil(circleRadius / (hexRadius * 1.5)) + 2;
+        for (let q = -maxRing; q <= maxRing; q++) {
+            for (let r = -maxRing; r <= maxRing; r++) {
+                centers.push({ q, r, pos: hexToCartesian(q, r, hexRadius) });
+            }
         }
 
-        for (let i = 0; i < 6; i++) {
-            const tri = [c, corners[i], corners[(i + 1) % 6]];
-            const clipped = clipPolygonToCircle(tri, circleRadius);
-            if (clipped.length >= 3) {
-                const base = getVertexIndex(clipped[0]);
-                for (let k = 1; k < clipped.length - 1; k++) {
-                    const i1 = getVertexIndex(clipped[k]);
-                    const i2 = getVertexIndex(clipped[k + 1]);
-                    const triStart = allIndices.length;
-                    allIndices.push(base, i1, i2);
-                    triIdToIndex.set(`${q},${r},${i}`, triStart);
+        // ====== 2) Triangulate ======
+        allVerts = [];
+        allIndices = [];
+        const vertexMap = new Map();
+        const triIdToIndex = new Map();
+
+        function getVertexIndex(v) {
+            const key = `${v.x.toFixed(5)},${v.y.toFixed(5)}`;
+            if (vertexMap.has(key)) return vertexMap.get(key);
+            const idx = allVerts.length / 3;
+            allVerts.push(v.x, 0, v.y);
+            vertexMap.set(key, idx);
+            return idx;
+        }
+
+        for (const { q, r, pos: c } of centers) {
+            const corners = [];
+            for (let i = 0; i < 6; i++) {
+                const a = Math.PI / 3 * i + Math.PI / 6;
+                corners.push(
+                    new Vector2(
+                        c.x + hexRadius * Math.cos(a),
+                        c.y + hexRadius * Math.sin(a),
+                    ),
+                );
+            }
+
+            for (let i = 0; i < 6; i++) {
+                const tri = [c, corners[i], corners[(i + 1) % 6]];
+                const clipped = clipPolygonToCircle(tri, circleRadius);
+                if (clipped.length >= 3) {
+                    const base = getVertexIndex(clipped[0]);
+                    for (let k = 1; k < clipped.length - 1; k++) {
+                        const i1 = getVertexIndex(clipped[k]);
+                        const i2 = getVertexIndex(clipped[k + 1]);
+                        const triStart = allIndices.length;
+                        allIndices.push(base, i1, i2);
+                        triIdToIndex.set(`${q},${r},${i}`, triStart);
+                    }
                 }
             }
         }
+
+        // ====== 3) Mesh ======
+        mesh = registerOrReuseResource(
+            scene,
+            "hexCircleWarped",
+            () => new Mesh("hexCircleWarped", scene),
+        );
+
+        const oldIndexCount = mesh.getTotalIndices();
+        const oldVertexCount = mesh.getTotalVertices();
+
+        const newIndexCount = allIndices.length;
+        const newVertexCount = allVerts.length / 3;
+
+        const needsResize = newIndexCount !== oldIndexCount ||
+            newVertexCount !== oldVertexCount;
+
+        vdata = new VertexData();
+        vdata.indices = allIndices;
+        // vdata.applyToMesh(mesh); // indices only (non updatable is fine)
+        if (needsResize) {
+            // recreate index buffer
+            mesh.setIndices(allIndices, null, true);
+
+            // recreate vertex buffer
+            mesh.setVerticesData(
+                VertexBuffer.PositionKind,
+                allVerts.slice(),
+                true,
+                3, // item size
+                true, // instantiate new buffer
+            );
+        } else {
+            // update in-place (same buffer size)
+            mesh.updateVerticesData(
+                VertexBuffer.PositionKind,
+                allVerts,
+            );
+            mesh.setIndices(allIndices);
+        }
+
+        const mat = new StandardMaterial("mat", scene);
+        // mat.diffuseColor = new Color3(0.3, 0.8, 1.0);
+        mat.backFaceCulling = false;
+        // mat.wireframe = true;
+        mesh.material = mat;
+        return { originalVerts: allVerts.slice(), mesh };
     }
 
-    // ====== 3) Mesh ======
-    const mesh = registerOrReuseResource(scene, "hexCircleWarped", () => new Mesh("hexCircleWarped", scene));
-    const vdata = new VertexData();
-    vdata.indices = allIndices;
-    vdata.applyToMesh(mesh); // indices only (non updatable is fine)
-
-    mesh.setVerticesData(
-        VertexBuffer.PositionKind,
-        allVerts.slice(),
-        true // <<< updatable
-    );
-
-    // normals too if you want them updatable
-    mesh.setVerticesData(
-        VertexBuffer.NormalKind,
-        vdata.normals,
-        true
-    );
-
-    const mat = new StandardMaterial("mat", scene);
-    // mat.diffuseColor = new Color3(0.3, 0.8, 1.0);
-    mat.backFaceCulling = false;
-    // mat.wireframe = true;
-    mesh.material = mat;
-
-    // ====== 4) Balanced-Density Warp (with Easing shaping) ======
-    const originalVerts = allVerts.slice();
-    let clampRadius = 1.0;    // C
-    let strength = 0.8;       // α = 1/(1+strength)
-    let edgeSlope = 1;        // slope at R (0..1)
+    let clampRadius = 7.6; // C
+    let strength = .7; // α = 1/(1+strength)
+    let edgeSlope = .15; // slope at R (0..1)
     let easingFn = new QuadraticEase();
     easingFn.setEasingMode(EasingFunction.EASINGMODE_EASEIN);
 
     // Interior shaping amount for the easing "bump" (kept modest to avoid artifacts)
     let curveAmount = .5;
 
+    let mapR = makeRadiusMapper(
+        circleRadius,
+        clampRadius,
+        strength,
+        edgeSlope,
+        easingFn,
+        curveAmount,
+    );
 
+    function rebuildDeformedMesh(scene) {
+        let { originalVerts } = generateGeometry();
+        applyWarp({ originalVerts, mapR });
 
+        if (scene.compositeHeightmap) {
+            applyHeightmapToMesh(mesh, { strength: heightmapStrength });
+            applyProceduralPBR(mesh, scene);
+        }
+    }
+
+    rebuildDeformedMesh(scene);
+
+    // ====== 4) Balanced-Density Warp (with Easing shaping) ======
 
     function alphaFromStrength(s) {
         return 1 / (1 + Math.max(0, s));
@@ -967,13 +1100,13 @@ function setupHexMesh(scene, camera, skirt) {
         const span = R - C;
         const p0 = α * C;
         const p1 = R;
-        const m0 = α * span;            // slope at C (times span)
-        const m1 = sEdgeSlope * span;   // slope at R (times span)
+        const m0 = α * span; // slope at C (times span)
+        const m1 = sEdgeSlope * span; // slope at R (times span)
 
         // Precompute for speed
         return function mapR(r) {
             if (r <= 0) return 0;
-            if (r >= R) return R;
+
             if (r <= C) return α * r;
 
             const t = (r - C) / span;
@@ -990,8 +1123,23 @@ function setupHexMesh(scene, camera, skirt) {
     }
 
     // Inverse via LUT on newR -> r (monotone)
-    function makeInverseRadiusMapper(R, C, sStrength, sEdgeSlope, easing, bumpAmt, N = 2048) {
-        const mapR = makeRadiusMapper(R, C, sStrength, sEdgeSlope, easing, bumpAmt);
+    function makeInverseRadiusMapper(
+        R,
+        C,
+        sStrength,
+        sEdgeSlope,
+        easing,
+        bumpAmt,
+        N = 2048,
+    ) {
+        const mapR = makeRadiusMapper(
+            R,
+            C,
+            sStrength,
+            sEdgeSlope,
+            easing,
+            bumpAmt,
+        );
         const r0s = new Float32Array(N + 1);
         const Rs = new Float32Array(N + 1);
         for (let i = 0; i <= N; i++) {
@@ -1005,7 +1153,8 @@ function setupHexMesh(scene, camera, skirt) {
             let lo = 0, hi = N;
             while (lo + 1 < hi) {
                 const mid = (lo + hi) >> 1;
-                if (Rs[mid] < newR) lo = mid; else hi = mid;
+                if (Rs[mid] < newR) lo = mid;
+                else hi = mid;
             }
             const d = Rs[hi] - Rs[lo];
             if (d <= 1e-12) return r0s[lo];
@@ -1014,17 +1163,23 @@ function setupHexMesh(scene, camera, skirt) {
         };
     }
 
-    let mapR = makeRadiusMapper(circleRadius, clampRadius, strength, edgeSlope, easingFn, curveAmount);
-    let invR = makeInverseRadiusMapper(circleRadius, clampRadius, strength, edgeSlope, easingFn, curveAmount);
+    let invR = makeInverseRadiusMapper(
+        circleRadius,
+        clampRadius,
+        strength,
+        edgeSlope,
+        easingFn,
+        curveAmount,
+    );
 
-    function applyWarp() {
+    function applyWarp({ originalVerts, mapR }) {
         const warped = originalVerts.slice();
         const R = circleRadius;
         for (let i = 0; i < warped.length; i += 3) {
             const x = warped[i];
             const y = warped[i + 2];
             const r = Math.hypot(x, y);
-            if (r === 0 || r > R + 1e-7) continue;
+            if (r === 0) continue; // ← only keep divide-by-zero protection
             const nr = mapR(r);
             const k = nr / r;
             warped[i] = x * k;
@@ -1036,11 +1191,7 @@ function setupHexMesh(scene, camera, skirt) {
         vdata.applyToMesh(mesh);
     }
 
-  
     // -------------------------------------------------------------
-
-    applyWarp();
-
 
     function hexCenterWarped(q, r) {
         const size = hexRadius;
@@ -1064,7 +1215,7 @@ function setupHexMesh(scene, camera, skirt) {
             const a = Math.PI / 3 * i + Math.PI / 6;
             const local = new Vector2(
                 (q + r / 2) * Math.sqrt(3) * size + size * Math.cos(a),
-                (r * 1.5) * size + size * Math.sin(a)
+                (r * 1.5) * size + size * Math.sin(a),
             );
             const r0 = Math.hypot(local.x, local.y);
             const nr = (r0 >= circleRadius) ? circleRadius : mapR(r0);
@@ -1077,7 +1228,11 @@ function setupHexMesh(scene, camera, skirt) {
         for (let i = 0; i < 6; i++) {
             pos.push(center.x, center.y + liftY, center.z);
             pos.push(corners[i].x, corners[i].y, corners[i].z);
-            pos.push(corners[(i + 1) % 6].x, corners[(i + 1) % 6].y, corners[(i + 1) % 6].z);
+            pos.push(
+                corners[(i + 1) % 6].x,
+                corners[(i + 1) % 6].y,
+                corners[(i + 1) % 6].z,
+            );
             const base = i * 3;
             idx.push(base, base + 1, base + 2);
         }
@@ -1090,16 +1245,7 @@ function setupHexMesh(scene, camera, skirt) {
         outMesh.setEnabled(true);
     }
 
-
-        // ====== 7) GUI (lil-gui) ======
-
-    function rebuildDeformedMesh(scene) {
-        applyWarp();
-
-        if (scene.compositeHeightmap) {
-            applyHeightmapToMesh(mesh, { strength: heightmapStrength });
-        }
-    }
+    // ====== 7) GUI (lil-gui) ======
 
     function attachHexWarpGUI() {
         if (typeof window === "undefined") return;
@@ -1107,15 +1253,16 @@ function setupHexMesh(scene, camera, skirt) {
         let gui;
         if (window.__GLOBAL_LIL_GUI__) {
             gui = window.__GLOBAL_LIL_GUI__;
-        } 
+        }
 
         // Destroy old folder if exists
-        const existing = gui.folders?.find?.(f => f._title === "Hex Warp");
+        const existing = gui.folders?.find?.((f) => f._title === "Hex Warp");
         if (existing) existing.destroy();
 
         const folder = gui.addFolder("Hex Warp");
 
         const params = {
+            heightmapScale: 1,
             clampRadius: clampRadius,
             strength: strength,
             edgeSlope: edgeSlope,
@@ -1124,7 +1271,7 @@ function setupHexMesh(scene, camera, skirt) {
             circleRadius: circleRadius,
             hexRadius: hexRadius,
             heightmapShrink: scene._heightmapShrink || 1.0,
-            easing: "Quadratic"
+            easing: "Quadratic",
         };
 
         const easingDefs = {
@@ -1135,71 +1282,149 @@ function setupHexMesh(scene, camera, skirt) {
             Exponential: ExponentialEase,
             Sine: SineEase,
             Circle: CircleEase,
-            Power: PowerEase
+            Power: PowerEase,
         };
 
         // Clamp Radius
         folder.add(params, "clampRadius", 0.0, circleRadius * 0.95)
             .name("Clamp Radius")
-            .onChange(v => {
+            .onChange((v) => {
                 clampRadius = Math.min(Math.max(0, v), circleRadius - 1e-6);
-                mapR = makeRadiusMapper(circleRadius, clampRadius, strength, edgeSlope, easingFn, curveAmount);
-                invR = makeInverseRadiusMapper(circleRadius, clampRadius, strength, edgeSlope, easingFn, curveAmount);
+                mapR = makeRadiusMapper(
+                    circleRadius,
+                    clampRadius,
+                    strength,
+                    edgeSlope,
+                    easingFn,
+                    curveAmount,
+                );
+                invR = makeInverseRadiusMapper(
+                    circleRadius,
+                    clampRadius,
+                    strength,
+                    edgeSlope,
+                    easingFn,
+                    curveAmount,
+                );
                 rebuildDeformedMesh(scene);
+            });
+
+        folder.add(params, "heightmapScale", 0.1, 4.0)
+            .name("Heightmap Scale")
+            .onChange((v) => {
+                scene.compositeHeightmap.scale = v;
+                rebuildDeformedMesh(scene);
+                // shading reacts automatically
             });
 
         // Strength
         folder.add(params, "strength", 0.0, 8.0)
             .name("Strength (inside compression)")
-            .onChange(v => {
+            .onChange((v) => {
                 strength = v;
-                mapR = makeRadiusMapper(circleRadius, clampRadius, strength, edgeSlope, easingFn, curveAmount);
-                invR = makeInverseRadiusMapper(circleRadius, clampRadius, strength, edgeSlope, easingFn, curveAmount);
+                mapR = makeRadiusMapper(
+                    circleRadius,
+                    clampRadius,
+                    strength,
+                    edgeSlope,
+                    easingFn,
+                    curveAmount,
+                );
+                invR = makeInverseRadiusMapper(
+                    circleRadius,
+                    clampRadius,
+                    strength,
+                    edgeSlope,
+                    easingFn,
+                    curveAmount,
+                );
                 rebuildDeformedMesh(scene);
             });
 
         // Edge slope
         folder.add(params, "edgeSlope", 0.0, 1.0)
             .name("Edge Slope at R")
-            .onChange(v => {
+            .onChange((v) => {
                 edgeSlope = v;
-                mapR = makeRadiusMapper(circleRadius, clampRadius, strength, edgeSlope, easingFn, curveAmount);
-                invR = makeInverseRadiusMapper(circleRadius, clampRadius, strength, edgeSlope, easingFn, curveAmount);
+                mapR = makeRadiusMapper(
+                    circleRadius,
+                    clampRadius,
+                    strength,
+                    edgeSlope,
+                    easingFn,
+                    curveAmount,
+                );
+                invR = makeInverseRadiusMapper(
+                    circleRadius,
+                    clampRadius,
+                    strength,
+                    edgeSlope,
+                    easingFn,
+                    curveAmount,
+                );
                 rebuildDeformedMesh(scene);
             });
 
         // Curve Amount
         folder.add(params, "curveAmount", 0.0, 1.0)
             .name("Curve Amount (easing bump)")
-            .onChange(v => {
+            .onChange((v) => {
                 curveAmount = v;
-                mapR = makeRadiusMapper(circleRadius, clampRadius, strength, edgeSlope, easingFn, curveAmount);
-                invR = makeInverseRadiusMapper(circleRadius, clampRadius, strength, edgeSlope, easingFn, curveAmount);
+                mapR = makeRadiusMapper(
+                    circleRadius,
+                    clampRadius,
+                    strength,
+                    edgeSlope,
+                    easingFn,
+                    curveAmount,
+                );
+                invR = makeInverseRadiusMapper(
+                    circleRadius,
+                    clampRadius,
+                    strength,
+                    edgeSlope,
+                    easingFn,
+                    curveAmount,
+                );
                 rebuildDeformedMesh(scene);
             });
 
         // Heightmap strength
         folder.add(params, "heightmapStrength", 0.0, 12.0)
             .name("Heightmap Strength")
-            .onChange(v => {
+            .onChange((v) => {
                 heightmapStrength = v;
                 rebuildDeformedMesh(scene);
             });
 
         // Hex Lattice Radius
-        folder.add(params, "circleRadius", 0.0, 12.0)
+        folder.add(params, "circleRadius", 0.0, 50.0)
             .name("HexMesh Radius")
-            .onChange(v => {
+            .onChange((v) => {
                 circleRadius = v;
-                mapR = makeRadiusMapper(circleRadius, clampRadius, strength, edgeSlope, easingFn, curveAmount);
-                invR = makeInverseRadiusMapper(circleRadius, clampRadius, strength, edgeSlope, easingFn, curveAmount);
+                mapR = makeRadiusMapper(
+                    circleRadius,
+                    clampRadius,
+                    strength,
+                    edgeSlope,
+                    easingFn,
+                    curveAmount,
+                );
+                invR = makeInverseRadiusMapper(
+                    circleRadius,
+                    clampRadius,
+                    strength,
+                    edgeSlope,
+                    easingFn,
+                    curveAmount,
+                );
                 rebuildDeformedMesh(scene);
             });
 
         // Cell radius
-        folder.add(params, "hexRadius", 0.1, 0.5)
+        folder.add(params, "hexRadius", 0.02, 0.5)
             .name("Cell Radius")
-            .onChange(v => {
+            .onChange((v) => {
                 hexRadius = v;
                 rebuildDeformedMesh(scene);
             });
@@ -1207,20 +1432,28 @@ function setupHexMesh(scene, camera, skirt) {
         // Heightmap shrink (padding)
         folder.add(params, "heightmapShrink", 0.05, 1.0)
             .name("Heightmap Shrink (padding)")
-            .onChange(v => {
+            .onChange((v) => {
                 scene._heightmapShrink = v;
 
-                skirt.runJFA(scene, registerOrReuseResource(scene, "source_island_heightmap", () => null), {
-                    pad: 1.0 / v,
-                    heightMultiplier: 15.0,
-                    targetMesh: mesh
-                });
+                skirt.runJFA(
+                    scene,
+                    registerOrReuseResource(
+                        scene,
+                        "source_island_heightmap",
+                        () => null,
+                    ),
+                    {
+                        pad: 1.0 / v,
+                        heightMultiplier: 15.0,
+                        targetMesh: mesh,
+                    },
+                );
             });
 
         // Easing selector
         folder.add(params, "easing", Object.keys(easingDefs))
             .name("Easing (EaseIn)")
-            .onChange(label => {
+            .onChange((label) => {
                 const EaseClass = easingDefs[label];
                 easingFn = new EaseClass();
                 easingFn.setEasingMode(EasingFunction.EASINGMODE_EASEIN);
@@ -1229,8 +1462,22 @@ function setupHexMesh(scene, camera, skirt) {
                     easingFn.power = 2;
                 }
 
-                mapR = makeRadiusMapper(circleRadius, clampRadius, strength, edgeSlope, easingFn, curveAmount);
-                invR = makeInverseRadiusMapper(circleRadius, clampRadius, strength, edgeSlope, easingFn, curveAmount);
+                mapR = makeRadiusMapper(
+                    circleRadius,
+                    clampRadius,
+                    strength,
+                    edgeSlope,
+                    easingFn,
+                    curveAmount,
+                );
+                invR = makeInverseRadiusMapper(
+                    circleRadius,
+                    clampRadius,
+                    strength,
+                    edgeSlope,
+                    easingFn,
+                    curveAmount,
+                );
 
                 rebuildDeformedMesh(scene);
             });
@@ -1241,4 +1488,227 @@ function setupHexMesh(scene, camera, skirt) {
     attachHexWarpGUI();
 
     return mesh;
+}
+
+// ============================================================================
+//  PROCEDURAL PBR MATERIAL FROM COMPOSITE HEIGHT + EROSION
+// ============================================================================
+
+import { COLORS } from "../colors.js";
+
+/**
+ * Create a physically-plausible stylized PBR material using:
+ *  - composite height (micro-variation)
+ *  - slope (erosion indicator)
+ *  - height relative to min/max (biomes)
+ *
+ * @param {Mesh} mesh
+ * @param {Scene} scene
+ * @param {object} opts  { waterline?: number }
+ */
+export function applyProceduralPBR(mesh, scene, opts = {}) {
+    const H = scene.compositeHeightmap;
+    if (!H) return;
+
+    const waterline = opts.waterline ?? 0.5;
+
+    const positions = mesh.getVerticesData(VertexBuffer.PositionKind);
+    const normals = mesh.getVerticesData(VertexBuffer.NormalKind);
+    const vcount = positions.length / 3;
+
+    // -----------------------------------------------------------
+    // PASS 1: compute actual mesh bounding box (LOCAL SPACE)
+    // -----------------------------------------------------------
+    let minY = Infinity, maxY = -Infinity;
+
+    for (let i = 0; i < vcount; i++) {
+        const py = positions[i * 3 + 1];
+        if (py < minY) minY = py;
+        if (py > maxY) maxY = py;
+    }
+
+    const heightRange = Math.max(0.00001, maxY - minY);
+
+    console.log("%c[PBR DEBUG] Height Range", "color: #0af", {
+        minY,
+        maxY,
+        heightRange,
+    });
+
+    // -----------------------------------------------------------
+    // Palette
+    // -----------------------------------------------------------
+    const toC3 = (hex) => Color3.FromHexString(hex);
+
+    const PALETTE = {
+        rockLow: toC3(COLORS.stormyBlue),
+        rockHigh: toC3(COLORS.darkNavyBlue),
+
+        sandLow: toC3(COLORS.peach),
+        sandHigh: toC3(COLORS.fadedOrange),
+
+        grassLow: toC3(COLORS.lightTeal),
+        grassHigh: toC3(COLORS.kermitGreen),
+
+        cliffLow: toC3(COLORS.greyblue),
+        cliffHigh: toC3(COLORS.blueGreen),
+    };
+
+    // -----------------------------------------------------------
+    // Prepare buffers + DEBUG HISTOGRAM
+    // -----------------------------------------------------------
+    const colors = new Float32Array(vcount * 4);
+
+    let debugHeights = [];
+    let debugSlopes = [];
+    let biomeCount = { sand: 0, grass: 0, cliff: 0, rock: 0 };
+
+    for (let i = 0; i < vcount; i++) {
+        const px = positions[i * 3 + 0];
+        const py = positions[i * 3 + 1];
+        const pz = positions[i * 3 + 2];
+
+        const nx = normals[i * 3 + 0];
+        const ny = normals[i * 3 + 1];
+        const nz = normals[i * 3 + 2];
+
+        // HEIGHT
+        const hNorm = Scalar.Clamp((py - minY) / heightRange, 0, 1);
+        debugHeights.push(hNorm);
+
+        // SLOPE
+        const slope = Math.sqrt(nx * nx + nz * nz);
+        debugSlopes.push(slope);
+
+        let c, roughness, biome;
+
+        if (hNorm < waterline) {
+            biome = "sand";
+
+            const t = hNorm / waterline; // 0 near waterline
+
+            // Base warm sand color (albedo)
+            const warm = Color3.Lerp(
+                Color3.FromHexString(COLORS.peach),
+                Color3.FromHexString(COLORS.fadedOrange),
+                t,
+            );
+
+            // Subtle mineral variation (adds realism)
+            const mineral = Color3.Lerp(
+                warm,
+                Color3.FromHexString(COLORS.offWhite),
+                0.1 + 0.2 * Math.random(), // tiny random variation per-vertex
+            );
+
+            // Very subtle cool tint for realism
+            const coolTint = Color3.Lerp(
+                mineral,
+                Color3.FromHexString(COLORS.lightTeal),
+                0.03,
+            );
+
+            c = coolTint;
+
+            // Roughness: dry → wet range
+            const dryR = 0.9; // dry sand
+            const wetR = 0.7; // slightly darker near waterline
+            roughness = Scalar.Lerp(wetR, dryR, t);
+
+            // Metallic always 0 for sand (dielectric)
+        } else if (slope > 0.55) {
+            biome = "cliff";
+            const t = Scalar.Clamp((slope - 0.55) * 2.0, 0, 1);
+            c = Color3.Lerp(PALETTE.cliffLow, PALETTE.cliffHigh, t);
+            roughness = 0.9;
+        } else if (hNorm > 0.7) {
+            biome = "rock";
+            const t = Scalar.Clamp((hNorm - 0.7) * 3.0, 0, 1);
+            c = Color3.Lerp(PALETTE.rockLow, PALETTE.rockHigh, t);
+            roughness = 0.75;
+        } else {
+            biome = "grass";
+            const t = Scalar.Clamp(
+                (hNorm - waterline) / (0.7 - waterline),
+                0,
+                1,
+            );
+            c = Color3.Lerp(PALETTE.grassLow, PALETTE.grassHigh, t);
+            roughness = 0.6;
+        }
+
+        biomeCount[biome]++;
+
+        // STORE
+        colors[i * 4 + 0] = c.r;
+        colors[i * 4 + 1] = c.g;
+        colors[i * 4 + 2] = c.b;
+        colors[i * 4 + 3] = roughness;
+    }
+
+    mesh.setVerticesData(VertexBuffer.ColorKind, colors, true);
+
+    // -----------------------------------------------------------
+    // DEBUG OUTPUT
+    // -----------------------------------------------------------
+
+    // Show a small sample:
+    console.log(
+        "%c[PBR DEBUG] Sample hNorm values",
+        "color:#0bf",
+        debugHeights.slice(0, 20),
+    );
+
+    console.log(
+        "%c[PBR DEBUG] Sample slopes",
+        "color:#0bf",
+        debugSlopes.slice(0, 20),
+    );
+
+    console.log("%c[PBR DEBUG] Biome Histogram", "color:#fa0", biomeCount);
+
+    // -----------------------------------------------------------
+    // PBR Setup
+    // -----------------------------------------------------------
+    let mat = mesh.material;
+    if (!(mat instanceof PBRMaterial)) {
+        mat = new PBRMaterial("proceduralPBR", scene);
+        mesh.material = mat;
+    }
+
+    mat.useVertexColors = true;
+    mat.metallic = 0.05;
+    mat.roughness = 1.0;
+    mat.useRoughnessFromMetallicTextureAlpha = true;
+
+    return mat;
+}
+
+function generatePlanarUVs(mesh, bounds) {
+    const positions = mesh.getVerticesData(VertexBuffer.PositionKind);
+    const uvs = new Float32Array((positions.length / 3) * 2);
+
+    const minX = bounds.minX;
+    const maxX = bounds.maxX;
+    const minZ = bounds.minZ;
+    const maxZ = bounds.maxZ;
+
+    let idx = 0;
+    for (let i = 0; i < positions.length; i += 3) {
+        const x = positions[i + 0];
+        const z = positions[i + 2];
+
+        const world = Vector3.TransformCoordinates(
+            new Vector3(x, positions[i + 1], z),
+            mesh.getWorldMatrix()
+        );
+
+        const u = Scalar.InverseLerp(minX, maxX, world.x);
+        const v = Scalar.InverseLerp(minZ, maxZ, world.z);
+
+        uvs[idx++] = u;
+        uvs[idx++] = v;
+    }
+
+    mesh.setVerticesData(VertexBuffer.UVKind, uvs, true);
 }

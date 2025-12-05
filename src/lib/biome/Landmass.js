@@ -1,8 +1,8 @@
 // biome/Landmass.js
-import { WINDOW_CONTEXT } from '@/lib/helpers'; // same as Water
-import { Color3, Engine, Mesh, RawTexture, Scene, StandardMaterial, Texture, VertexData } from '@babylonjs/core';
-import GUI from 'lil-gui';
-import { SkirtForHeightmap } from './SkirtFromHeightmap';
+import { WINDOW_CONTEXT } from "@/lib/helpers"; // same as Water
+import { Engine, RawTexture, Scene, Texture } from "@babylonjs/core";
+import GUI from "lil-gui";
+import { applyProceduralPBR, SkirtForHeightmap } from "./SkirtFromHeightmap";
 /**
  * A cubic noise
  * @param {Number} width The width of the range that can be sampled
@@ -14,7 +14,9 @@ const CubicNoise = function (width, height, randomizer) {
     this.width = width;
     this.values = new Array((width + 2) * (height + 2));
 
-    for (let i = 0; i < this.values.length; ++i) this.values[i] = randomizer.getFloat();
+    for (let i = 0; i < this.values.length; ++i) {
+        this.values[i] = randomizer.getFloat();
+    }
 };
 
 /**
@@ -44,12 +46,36 @@ CubicNoise.prototype.sample = function (x, y) {
 
     return (
         this.interpolate(
-            this.interpolate(this.values[yi * this.width + xi], this.values[yi * this.width + xi + 1], this.values[yi * this.width + xi + 2], this.values[yi * this.width + xi + 3], x - xi),
-            this.interpolate(this.values[(yi + 1) * this.width + xi], this.values[(yi + 1) * this.width + xi + 1], this.values[(yi + 1) * this.width + xi + 2], this.values[(yi + 1) * this.width + xi + 3], x - xi),
-            this.interpolate(this.values[(yi + 2) * this.width + xi], this.values[(yi + 2) * this.width + xi + 1], this.values[(yi + 2) * this.width + xi + 2], this.values[(yi + 2) * this.width + xi + 3], x - xi),
-            this.interpolate(this.values[(yi + 3) * this.width + xi], this.values[(yi + 3) * this.width + xi + 1], this.values[(yi + 3) * this.width + xi + 2], this.values[(yi + 3) * this.width + xi + 3], x - xi),
-            y - yi
-        ) *
+                this.interpolate(
+                    this.values[yi * this.width + xi],
+                    this.values[yi * this.width + xi + 1],
+                    this.values[yi * this.width + xi + 2],
+                    this.values[yi * this.width + xi + 3],
+                    x - xi,
+                ),
+                this.interpolate(
+                    this.values[(yi + 1) * this.width + xi],
+                    this.values[(yi + 1) * this.width + xi + 1],
+                    this.values[(yi + 1) * this.width + xi + 2],
+                    this.values[(yi + 1) * this.width + xi + 3],
+                    x - xi,
+                ),
+                this.interpolate(
+                    this.values[(yi + 2) * this.width + xi],
+                    this.values[(yi + 2) * this.width + xi + 1],
+                    this.values[(yi + 2) * this.width + xi + 2],
+                    this.values[(yi + 2) * this.width + xi + 3],
+                    x - xi,
+                ),
+                this.interpolate(
+                    this.values[(yi + 3) * this.width + xi],
+                    this.values[(yi + 3) * this.width + xi + 1],
+                    this.values[(yi + 3) * this.width + xi + 2],
+                    this.values[(yi + 3) * this.width + xi + 3],
+                    x - xi,
+                ),
+                y - yi,
+            ) *
             0.5 +
         0.25
     );
@@ -89,7 +115,9 @@ class GridSampler {
 
         const xi = Math.floor(x);
         const yi = Math.floor(y);
-        if (xi >= this.width - 1 || yi >= this.height - 1) return this.defaultValue;
+        if (xi >= this.width - 1 || yi >= this.height - 1) {
+            return this.defaultValue;
+        }
 
         const fx = x - xi;
         const fy = y - yi;
@@ -117,21 +145,30 @@ class GridSampler {
         this.values[xi + yi * this.width] += fx * fy * delta;
         this.values[xi + 1 + yi * this.width] += (1 - fx) * fy * delta;
         this.values[xi + (yi + 1) * this.width] += fx * (1 - fy) * delta;
-        this.values[xi + 1 + (yi + 1) * this.width] += (1 - fx) * (1 - fy) * delta;
+        this.values[xi + 1 + (yi + 1) * this.width] += (1 - fx) * (1 - fy) *
+            delta;
     }
     blur() {
         const newValues = new Array((this.width - 2) * (this.height - 2));
         for (let y = 1; y < this.height - 1; ++y) {
             for (let x = 1; x < this.width - 1; ++x) {
                 newValues[x - 1 + (y - 1) * (this.width - 2)] =
-                    (this.values[x - 1 + y * this.width] + this.values[x + (y - 1) * this.width] + this.values[x + 1 + y * this.width] + this.values[x + (y + 1) * this.width]) * 0.125 +
-                    (this.values[x - 1 + (y - 1) * this.width] + this.values[x + 1 + (y - 1) * this.width] + this.values[x + 1 + (y + 1) * this.width] + this.values[x - 1 + (y + 1) * this.width]) * 0.0625 +
+                    (this.values[x - 1 + y * this.width] +
+                            this.values[x + (y - 1) * this.width] +
+                            this.values[x + 1 + y * this.width] +
+                            this.values[x + (y + 1) * this.width]) * 0.125 +
+                    (this.values[x - 1 + (y - 1) * this.width] +
+                            this.values[x + 1 + (y - 1) * this.width] +
+                            this.values[x + 1 + (y + 1) * this.width] +
+                            this.values[x - 1 + (y + 1) * this.width]) *
+                        0.0625 +
                     this.values[x + y * this.width] * 0.25;
             }
         }
         for (let y = 1; y < this.height - 1; ++y) {
             for (let x = 1; x < this.width - 1; ++x) {
-                this.values[x + y * this.width] = newValues[x - 1 + (y - 1) * (this.width - 2)];
+                this.values[x + y * this.width] =
+                    newValues[x - 1 + (y - 1) * (this.width - 2)];
             }
         }
     }
@@ -139,7 +176,14 @@ class GridSampler {
 
 /** Parameters (upstream defaults) */
 class HeightMapParameters {
-    constructor(octaves = 6, scale = 0.1, influenceFalloff = 0.5, scaleFalloff = 1.7, amplitude = 30, heightPower = 4.5) {
+    constructor(
+        octaves = 6,
+        scale = 0.1,
+        influenceFalloff = 0.5,
+        scaleFalloff = 1.7,
+        amplitude = 30,
+        heightPower = 4.5,
+    ) {
         this.octaves = octaves;
         this.scale = scale;
         this.influenceFalloff = influenceFalloff;
@@ -149,7 +193,16 @@ class HeightMapParameters {
     }
 }
 class ErosionHydraulicParameters {
-    constructor(dropsPerCell = 0.4, erosionRate = 0.04, depositionRate = 0.03, speed = 0.15, friction = 0.7, radius = 0.8, maxIterations = 80, iterationScale = 0.04) {
+    constructor(
+        dropsPerCell = 0.4,
+        erosionRate = 0.04,
+        depositionRate = 0.03,
+        speed = 0.15,
+        friction = 0.7,
+        radius = 0.8,
+        maxIterations = 80,
+        iterationScale = 0.04,
+    ) {
         this.dropsPerCell = dropsPerCell;
         this.erosionRate = erosionRate;
         this.depositionRate = depositionRate;
@@ -161,7 +214,12 @@ class ErosionHydraulicParameters {
     }
 }
 class ErosionCoastalParameters {
-    constructor(waveHeightMin = 0.4, waveHeightMax = 1.2, noiseScale = 0.5, power = 3) {
+    constructor(
+        waveHeightMin = 0.4,
+        waveHeightMax = 1.2,
+        noiseScale = 0.5,
+        power = 3,
+    ) {
         this.waveHeightMin = waveHeightMin;
         this.waveHeightMax = waveHeightMax;
         this.noiseScale = noiseScale;
@@ -169,7 +227,13 @@ class ErosionCoastalParameters {
     }
 }
 class VolcanoesParameters {
-    constructor(volcanoThreshold = 2.5, volcanoThresholdAmplitude = 2, volcanoThresholdScale = 0.2, volcanoMaxDepth = 0.5, volcanoCraterScale = 0.5) {
+    constructor(
+        volcanoThreshold = 2.5,
+        volcanoThresholdAmplitude = 2,
+        volcanoThresholdScale = 0.2,
+        volcanoMaxDepth = 0.5,
+        volcanoCraterScale = 0.5,
+    ) {
         this.volcanoThreshold = volcanoThreshold;
         this.volcanoThresholdAmplitude = volcanoThresholdAmplitude;
         this.volcanoThresholdScale = volcanoThresholdScale;
@@ -182,13 +246,13 @@ class TerrainParameters {
         width = 25,
         height = 25,
         /* water */ _water = 0.5,
-        shape = 'cone',
+        shape = "cone",
         shapePower = 1.6,
         resolution = 0.1,
         heightMapParameters = new HeightMapParameters(),
         erosionHydraulicParameters = new ErosionHydraulicParameters(),
         erosionCoastalParameters = new ErosionCoastalParameters(),
-        volcanoesParameters = new VolcanoesParameters()
+        volcanoesParameters = new VolcanoesParameters(),
     ) {
         this.width = width;
         this.height = height;
@@ -202,7 +266,7 @@ class TerrainParameters {
         this.volcanoesParameters = volcanoesParameters;
     }
 }
-TerrainParameters.SHAPE_CONE = 'cone';
+TerrainParameters.SHAPE_CONE = "cone";
 
 /** Shape: cone (upstream) */
 class ShapeCone {
@@ -214,7 +278,11 @@ class ShapeCone {
     sample(x, y) {
         const dx = (this.width * 0.5 - x) / this.width;
         const dy = (this.height * 0.5 - y) / this.height;
-        return Math.cos(Math.PI * Math.min(1, 2 * Math.sqrt(dx * dx + dy * dy)) ** this.power) * 0.5 + 0.5;
+        return Math.cos(
+                    Math.PI *
+                        Math.min(1, 2 * Math.sqrt(dx * dx + dy * dy)) **
+                            this.power,
+                ) * 0.5 + 0.5;
     }
 }
 
@@ -228,7 +296,12 @@ class HeightMap {
         this.shape = shape;
         this.random = random;
         this.values = new Array(xValues * yValues);
-        this.sampler = new GridSampler(this.xValues, this.yValues, this.values, 1 / resolution);
+        this.sampler = new GridSampler(
+            this.xValues,
+            this.yValues,
+            this.values,
+            1 / resolution,
+        );
         this.maxHeight = 0;
         this.generate();
     }
@@ -237,7 +310,11 @@ class HeightMap {
         let scale = this.parameters.scale;
         for (let octave = 0; octave < this.parameters.octaves; ++octave) {
             // Assumes global CubicNoise available (as you noted)
-            noises[octave] = new CubicNoise(Math.ceil(scale * this.xValues), Math.ceil(scale * this.yValues), this.random);
+            noises[octave] = new CubicNoise(
+                Math.ceil(scale * this.xValues),
+                Math.ceil(scale * this.yValues),
+                this.random,
+            );
             scale *= this.parameters.scaleFalloff;
         }
         return noises;
@@ -245,7 +322,8 @@ class HeightMap {
     makeInfluences(octaves, falloff) {
         const influences = new Array(octaves);
         const iFalloff = 1 / falloff;
-        let influence = ((iFalloff - 1) * iFalloff ** octaves) / (iFalloff ** octaves - 1) / iFalloff;
+        let influence = ((iFalloff - 1) * iFalloff ** octaves) /
+            (iFalloff ** octaves - 1) / iFalloff;
         for (let octave = 0; octave < octaves; ++octave) {
             influences[octave] = influence;
             if (octave !== octaves - 1) influence *= falloff;
@@ -254,18 +332,30 @@ class HeightMap {
     }
     generate() {
         const noises = this.createNoises();
-        const influences = this.makeInfluences(this.parameters.octaves, this.parameters.influenceFalloff);
+        const influences = this.makeInfluences(
+            this.parameters.octaves,
+            this.parameters.influenceFalloff,
+        );
         for (let y = 0; y < this.yValues; ++y) {
             for (let x = 0; x < this.xValues; ++x) {
                 const index = x + y * this.xValues;
                 let scale = this.parameters.scale * this.resolution;
                 let height = 0;
-                for (let octave = 0; octave < this.parameters.octaves; ++octave) {
-                    height += noises[octave].sample(x * scale, y * scale) * influences[octave];
-                    if (octave !== this.parameters.octaves - 1) scale *= this.parameters.scaleFalloff;
+                for (
+                    let octave = 0; octave < this.parameters.octaves; ++octave
+                ) {
+                    height += noises[octave].sample(x * scale, y * scale) *
+                        influences[octave];
+                    if (octave !== this.parameters.octaves - 1) {
+                        scale *= this.parameters.scaleFalloff;
+                    }
                 }
-                this.values[index] = height ** this.parameters.heightPower * this.parameters.amplitude * this.shape.sample(x * this.resolution, y * this.resolution);
-                if (this.maxHeight < this.values[index]) this.maxHeight = this.values[index];
+                this.values[index] = height ** this.parameters.heightPower *
+                    this.parameters.amplitude *
+                    this.shape.sample(x * this.resolution, y * this.resolution);
+                if (this.maxHeight < this.values[index]) {
+                    this.maxHeight = this.values[index];
+                }
             }
         }
     }
@@ -299,14 +389,32 @@ class ErosionCoastal {
         this.random = random;
     }
     apply(heightMap) {
-        const noise = new CubicNoise(Math.ceil(heightMap.xValues * this.resolution * this.parameters.noiseScale), Math.ceil(heightMap.yValues * this.resolution * this.parameters.noiseScale), this.random);
+        const noise = new CubicNoise(
+            Math.ceil(
+                heightMap.xValues * this.resolution *
+                    this.parameters.noiseScale,
+            ),
+            Math.ceil(
+                heightMap.yValues * this.resolution *
+                    this.parameters.noiseScale,
+            ),
+            this.random,
+        );
         for (let y = 0; y < heightMap.yValues; ++y) {
             for (let x = 0; x < heightMap.xValues; ++x) {
                 const index = x + y * heightMap.xValues;
-                const threshold = this.parameters.waveHeightMin + noise.sample(x * this.resolution * this.parameters.noiseScale, y * this.resolution * this.parameters.noiseScale) * (this.parameters.waveHeightMax - this.parameters.waveHeightMin);
+                const threshold = this.parameters.waveHeightMin +
+                    noise.sample(
+                            x * this.resolution * this.parameters.noiseScale,
+                            y * this.resolution * this.parameters.noiseScale,
+                        ) *
+                        (this.parameters.waveHeightMax -
+                            this.parameters.waveHeightMin);
 
                 if (heightMap.values[index] < threshold) {
-                    heightMap.values[index] *= (heightMap.values[index] / threshold) ** this.parameters.power;
+                    heightMap.values[index] *=
+                        (heightMap.values[index] / threshold) **
+                            this.parameters.power;
                 }
             }
         }
@@ -321,8 +429,10 @@ class ErosionHydraulic {
         this.random = random;
     }
     trace(x, y, heightMap) {
-        const ox = (this.random.getFloat() * 2 - 1) * this.parameters.radius * this.resolution;
-        const oy = (this.random.getFloat() * 2 - 1) * this.parameters.radius * this.resolution;
+        const ox = (this.random.getFloat() * 2 - 1) * this.parameters.radius *
+            this.resolution;
+        const oy = (this.random.getFloat() * 2 - 1) * this.parameters.radius *
+            this.resolution;
         let sediment = 0;
         let xp = x;
         let yp = y;
@@ -334,13 +444,16 @@ class ErosionHydraulic {
             if (n.y === 1) break;
 
             const deposit = sediment * this.parameters.depositionRate * n.y;
-            const erosion = this.parameters.erosionRate * (1 - n.y) * Math.min(1, i * this.parameters.iterationScale);
+            const erosion = this.parameters.erosionRate * (1 - n.y) *
+                Math.min(1, i * this.parameters.iterationScale);
 
             // Change at (xp, yp) using GridSampler-style "change"
             heightMap.sampler.change(xp, yp, deposit - erosion);
 
-            vx = this.parameters.friction * vx + n.x * this.parameters.speed * this.resolution;
-            vy = this.parameters.friction * vy + n.z * this.parameters.speed * this.resolution;
+            vx = this.parameters.friction * vx +
+                n.x * this.parameters.speed * this.resolution;
+            vy = this.parameters.friction * vy +
+                n.z * this.parameters.speed * this.resolution;
 
             xp = x;
             yp = y;
@@ -350,10 +463,15 @@ class ErosionHydraulic {
         }
     }
     apply(heightMap) {
-        const drops = this.parameters.dropsPerCell * (heightMap.xValues - 1) * (heightMap.yValues - 1);
+        const drops = this.parameters.dropsPerCell * (heightMap.xValues - 1) *
+            (heightMap.yValues - 1);
 
         for (let i = 0; i < drops; ++i) {
-            this.trace(this.random.getFloat() * heightMap.xValues * this.resolution, this.random.getFloat() * heightMap.yValues * this.resolution, heightMap);
+            this.trace(
+                this.random.getFloat() * heightMap.xValues * this.resolution,
+                this.random.getFloat() * heightMap.yValues * this.resolution,
+                heightMap,
+            );
         }
         heightMap.sampler.blur();
     }
@@ -366,17 +484,42 @@ class Volcanoes {
         this.random = random;
     }
     apply(heightMap) {
-        const rimNoise = new CubicNoise(Math.ceil(heightMap.xValues * heightMap.resolution * this.parameters.volcanoThresholdScale), Math.ceil(heightMap.yValues * heightMap.resolution * this.parameters.volcanoThresholdScale), this.random);
-        const volcanoThreshold = Math.max(this.parameters.volcanoThreshold, heightMap.maxHeight - this.parameters.volcanoMaxDepth * (1 / this.parameters.volcanoCraterScale));
+        const rimNoise = new CubicNoise(
+            Math.ceil(
+                heightMap.xValues * heightMap.resolution *
+                    this.parameters.volcanoThresholdScale,
+            ),
+            Math.ceil(
+                heightMap.yValues * heightMap.resolution *
+                    this.parameters.volcanoThresholdScale,
+            ),
+            this.random,
+        );
+        const volcanoThreshold = Math.max(
+            this.parameters.volcanoThreshold,
+            heightMap.maxHeight -
+                this.parameters.volcanoMaxDepth *
+                    (1 / this.parameters.volcanoCraterScale),
+        );
 
         for (let y = 0; y < heightMap.yValues; ++y) {
             for (let x = 0; x < heightMap.xValues; ++x) {
                 const height = heightMap.values[x + y * heightMap.xValues];
                 const threshold =
-                    (2 * rimNoise.sample(x * heightMap.resolution * this.parameters.volcanoThresholdScale, y * heightMap.resolution * this.parameters.volcanoThresholdScale) - 0.5) * this.parameters.volcanoThresholdAmplitude + volcanoThreshold;
+                    (2 *
+                                rimNoise.sample(
+                                    x * heightMap.resolution *
+                                        this.parameters.volcanoThresholdScale,
+                                    y * heightMap.resolution *
+                                        this.parameters.volcanoThresholdScale,
+                                ) - 0.5) *
+                        this.parameters.volcanoThresholdAmplitude +
+                    volcanoThreshold;
 
                 if (height > threshold) {
-                    heightMap.values[x + y * heightMap.xValues] -= (height - threshold) * (1 + this.parameters.volcanoCraterScale);
+                    heightMap.values[x + y * heightMap.xValues] -=
+                        (height - threshold) *
+                        (1 + this.parameters.volcanoCraterScale);
                 }
             }
         }
@@ -394,7 +537,11 @@ class Terrain {
         switch (this.parameters.shape) {
             default:
             case TerrainParameters.SHAPE_CONE:
-                return new ShapeCone(this.parameters.width, this.parameters.height, this.parameters.shapePower);
+                return new ShapeCone(
+                    this.parameters.width,
+                    this.parameters.height,
+                    this.parameters.shapePower,
+                );
         }
     }
     createHeightMap() {
@@ -404,17 +551,27 @@ class Terrain {
             Math.ceil(this.parameters.height / this.parameters.resolution) + 1,
             this.parameters.resolution,
             this.createShape(),
-            this.random
+            this.random,
         );
     }
     erodeCoastal() {
-        new ErosionCoastal(this.parameters.erosionCoastalParameters, this.parameters.resolution, this.random).apply(this.heightMap);
+        new ErosionCoastal(
+            this.parameters.erosionCoastalParameters,
+            this.parameters.resolution,
+            this.random,
+        ).apply(this.heightMap);
     }
     createVolcanoes() {
-        new Volcanoes(this.parameters.volcanoesParameters, this.random).apply(this.heightMap);
+        new Volcanoes(this.parameters.volcanoesParameters, this.random).apply(
+            this.heightMap,
+        );
     }
     erodeHydraulic() {
-        new ErosionHydraulic(this.parameters.erosionHydraulicParameters, this.parameters.resolution, this.random).apply(this.heightMap);
+        new ErosionHydraulic(
+            this.parameters.erosionHydraulicParameters,
+            this.parameters.resolution,
+            this.random,
+        ).apply(this.heightMap);
     }
 }
 
@@ -445,7 +602,7 @@ export class Landmass {
      */
     constructor(scene, opts = {}) {
         this.scene = scene;
-        this.size = opts.size ?? 25; // match upstream width default
+        this.size = opts.size ?? 50; // match upstream width default
         this.subdivisions = opts.subdivisions ?? Math.ceil(this.size / 0.1); // since resolution = 0.1 => subdivisions = size/0.1
         this.seed = (opts.seed ?? Math.floor(Math.random() * 0xffffffff)) >>> 0;
         this.mesh = null;
@@ -457,7 +614,7 @@ export class Landmass {
             0.5, // influenceFalloff
             1.7, // scaleFalloff
             30, // amplitude
-            4.5 // heightPower
+            4.5, // heightPower
         );
         const defaultErosionHydraulicParams = new ErosionHydraulicParameters(
             0.4, // dropsPerCell
@@ -467,29 +624,34 @@ export class Landmass {
             0.7, // friction
             0.8, // radius
             80, // maxIterations
-            0.04 // iterationScale
+            0.04, // iterationScale
         );
         const defaultErosionCoastalParams = new ErosionCoastalParameters(
             0.4, // waveHeightMin
             1.2, // waveHeightMax
             0.5, // noiseScale
-            3 // power
+            3, // power
         );
         const defaultVolcanoesParams = new VolcanoesParameters(
             2.5, // volcanoThreshold
             2, // volcanoThresholdAmplitude
             0.2, // volcanoThresholdScale
             0.5, // volcanoMaxDepth
-            0.5 // volcanoCraterScale
+            0.5, // volcanoCraterScale
         );
 
         // Combine defaults + overrides
         const params = {
             shapePower: opts.params?.shapePower ?? 1.6,
-            heightMapParameters: opts.params?.heightMapParameters ?? defaultHeightMapParams,
-            erosionHydraulicParameters: opts.params?.erosionHydraulicParameters ?? defaultErosionHydraulicParams,
-            erosionCoastalParameters: opts.params?.erosionCoastalParameters ?? defaultErosionCoastalParams,
-            volcanoesParameters: opts.params?.volcanoesParameters ?? defaultVolcanoesParams
+            heightMapParameters: opts.params?.heightMapParameters ??
+                defaultHeightMapParams,
+            erosionHydraulicParameters:
+                opts.params?.erosionHydraulicParameters ??
+                    defaultErosionHydraulicParams,
+            erosionCoastalParameters: opts.params?.erosionCoastalParameters ??
+                defaultErosionCoastalParams,
+            volcanoesParameters: opts.params?.volcanoesParameters ??
+                defaultVolcanoesParams,
         };
 
         this.params = params;
@@ -526,7 +688,7 @@ export class Landmass {
             paramOverrides.heightMapParameters,
             paramOverrides.erosionHydraulicParameters,
             paramOverrides.erosionCoastalParameters,
-            paramOverrides.volcanoesParameters
+            paramOverrides.volcanoesParameters,
         );
 
         const random = new Random(this.seed);
@@ -540,11 +702,22 @@ export class Landmass {
         this.heightMap = terrain.heightMap;
 
         // Build mesh from height map
-        // this._buildMeshFromHeightMap();
+
         this.createHeightmapDebugTexture();
-        
-          this.heightmap_skirt = new SkirtForHeightmap(this.heightmapDebugTexture, this.scene) 
-             this._waitForTexture(this.heightmapDebugTexture).then(e =>  this.heightmap_skirt.initialized ? this.heightmap_skirt.update() : this.heightmap_skirt.initialize())
+
+        this.heightmap_skirt = this.heightmap_skirt ||
+            new SkirtForHeightmap(this.heightmapDebugTexture, this.scene);
+        this._waitForTexture(this.heightmapDebugTexture)
+            .then(() =>
+                this.heightmap_skirt.initialized
+                    ? this.heightmap_skirt.update(this.heightmapDebugTexture)
+                    : this.heightmap_skirt.initialize(
+                        this.heightmapDebugTexture,
+                    )
+            ).then((mesh) => {
+                applyProceduralPBR(mesh, this.scene);
+            });
+
         // this._conformUnderwaterToCircularBasin();
     }
 
@@ -567,163 +740,6 @@ export class Landmass {
         });
     }
 
-    _buildMeshFromHeightMap() {
-        const hm = this.heightMap;
-        const xValues = hm.xValues;
-        const yValues = hm.yValues;
-
-        const positions = new Float32Array(xValues * yValues * 3);
-        const colors = new Float32Array(xValues * yValues * 4);
-        const indices = [];
-
-        let p = 0,
-            c = 0;
-        const half = this.size * 0.5;
-
-        for (let y = 0; y < yValues; ++y) {
-            for (let x = 0; x < xValues; ++x) {
-                const h = hm.values[x + y * xValues];
-                positions[p++] = (x / (xValues - 1)) * this.size - half; // X
-                positions[p++] = h; // Y
-                positions[p++] = (y / (yValues - 1)) * this.size - half; // Z
-
-                // Simple height-based color
-                let r, g, b;
-                if (h < 0.25) {
-                    r = 0.2;
-                    g = 0.3;
-                    b = 0.6;
-                } else if (h < 5.0) {
-                    r = 0.4;
-                    g = 0.7;
-                    b = 0.4;
-                } else if (h < 15.0) {
-                    r = 0.6;
-                    g = 0.5;
-                    b = 0.35;
-                } else {
-                    r = 0.82;
-                    g = 0.82;
-                    b = 0.82;
-                }
-
-                colors[c++] = r;
-                colors[c++] = g;
-                colors[c++] = b;
-                colors[c++] = 1.0;
-            }
-        }
-
-        for (let y = 0; y < yValues - 1; ++y) {
-            for (let x = 0; x < xValues - 1; ++x) {
-                const iLT = x + y * xValues;
-                const iRT = iLT + 1;
-                const iLB = x + (y + 1) * xValues;
-                const iRB = iLB + 1;
-
-                const hLT = hm.values[iLT];
-                const hRT = hm.values[iRT];
-                const hLB = hm.values[iLB];
-                const hRB = hm.values[iRB];
-
-                if (Math.abs(hRB - hLT) > Math.abs(hRT - hLB)) {
-                    indices.push(iLB, iLT, iRT, iRT, iRB, iLB);
-                } else {
-                    indices.push(iLT, iRT, iRB, iRB, iLB, iLT);
-                }
-            }
-        }
-
-        const mesh = new Mesh('island', this.scene);
-        const vd = new VertexData();
-        vd.positions = positions;
-        vd.indices = indices;
-        vd.colors = colors;
-        vd.normals = [];
-        VertexData.ComputeNormals(positions, indices, vd.normals);
-        vd.applyToMesh(mesh, true);
-
-        const mat = new StandardMaterial('islandMat', this.scene);
-        mat.specularColor = Color3.Black();
-        mat.diffuseColor = Color3.White();
-        mesh.material = mat;
-
-        this.mesh = mesh;
-
-        // After mesh build, optionally apply seabed shaping or other post-process
-        // (you may call this later from GUI updates)
-    }
-  
-    _edtSigned(mask, W, H) {
-        // 0 = land 1 = water
-        const INF = 1e12;
-
-        const f = new Float32Array(W * H);
-
-        // init: coastline = 0, others = INF
-        for (let j = 0; j < H; j++) {
-            for (let i = 0; i < W; i++) {
-                const k = i + j * W;
-                const m = mask[k];
-                let edge = false;
-                if (i > 0 && mask[k - 1] !== m) edge = true;
-                if (i < W - 1 && mask[k + 1] !== m) edge = true;
-                if (j > 0 && mask[k - W] !== m) edge = true;
-                if (j < H - 1 && mask[k + W] !== m) edge = true;
-                f[k] = edge ? 0 : INF;
-            }
-        }
-
-        const edt1D = (f, n) => {
-            const d = new Float32Array(n),
-                v = new Int32Array(n),
-                z = new Float32Array(n + 1);
-            let k = 0;
-            v[0] = 0;
-            z[0] = -Infinity;
-            z[1] = Infinity;
-            for (let q = 1; q < n; q++) {
-                let s = (f[q] + q * q - (f[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k]);
-                while (s <= z[k]) {
-                    k--;
-                    s = (f[q] + q * q - (f[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k]);
-                }
-                k++;
-                v[k] = q;
-                z[k] = s;
-                z[k + 1] = Infinity;
-            }
-            k = 0;
-            for (let q = 0; q < n; q++) {
-                while (z[k + 1] < q) k++;
-                const dx = q - v[k];
-                d[q] = dx * dx + f[v[k]];
-            }
-            return d;
-        };
-
-        // pass 1 (horizontal)
-        let tmp = new Float32Array(W * H);
-        for (let j = 0; j < H; j++) {
-            const row = f.subarray(j * W, j * W + W);
-            tmp.set(edt1D(row, W), j * W);
-        }
-
-        // pass 2 (vertical)
-        for (let i = 0; i < W; i++) {
-            const col = new Float32Array(H);
-            for (let j = 0; j < H; j++) col[j] = tmp[i + j * W];
-            const d = edt1D(col, H);
-            for (let j = 0; j < H; j++) f[i + j * W] = Math.sqrt(d[j]);
-        }
-
-        // signed distance
-        const sdf = new Float32Array(W * H);
-        for (let i = 0; i < W * H; i++) sdf[i] = mask[i] ? f[i] : -f[i];
-
-        return sdf;
-    }
-
     /**
      * Create a normalized grayscale heightmap texture that appears in Babylon Inspector.
      * - Uses RawTexture
@@ -732,7 +748,7 @@ export class Landmass {
      */
     createHeightmapDebugTexture() {
         if (!this.scene || !this.heightMap) {
-            console.warn('Heightmap or scene missing');
+            console.warn("Heightmap or scene missing");
             return null;
         }
 
@@ -773,27 +789,22 @@ export class Landmass {
             Engine.TEXTURETYPE_UNSIGNED_INT, // type (UInt8)
             undefined, // creationFlags
             false, // useSRGBBuffer
-            false // waitDataToBeReady
+            false, // waitDataToBeReady
         );
 
-        tex.name = 'HeightmapDebugTexture';
+        tex.name = "HeightmapDebugTexture";
         this.heightmapDebugTexture = tex;
-        console.log('Created HeightmapDebugTexture', tex, 'min =', minH, 'max =', maxH);
+        console.log(
+            "Created HeightmapDebugTexture",
+            tex,
+            "min =",
+            minH,
+            "max =",
+            maxH,
+        );
 
         return tex;
     }
-    _waitForEffect(effectWrapper) {
-        return new Promise((resolve) => {
-            if (effectWrapper.effect && effectWrapper.effect.isReady()) {
-                resolve();
-                return;
-            }
-            effectWrapper.onCompiled = () => resolve();
-            // force compilation
-            effectWrapper.effect._prepareEffect();
-        });
-    }
-
 
     /**
      * Adds a debug GUI for live tweaking of parameters.
@@ -805,14 +816,16 @@ export class Landmass {
         let gui;
         if (window.__GLOBAL_LIL_GUI__) gui = window.__GLOBAL_LIL_GUI__;
         else {
-            gui = new GUI({ title: 'Procedural Controls', width: 380 });
+            gui = new GUI({ title: "Procedural Controls", width: 380 });
             window.__GLOBAL_LIL_GUI__ = gui;
         }
 
-        const existing = gui.folders?.find?.((f) => f._title === '🏝️ Island Generator');
+        const existing = gui.folders?.find?.((f) =>
+            f._title === "🏝️ Island Generator"
+        );
         if (existing) existing.destroy();
 
-        const folder = gui.addFolder('🏝️ Island Generator');
+        const folder = gui.addFolder("🏝️ Island Generator");
 
         const params = {
             // Shape
@@ -824,17 +837,21 @@ export class Landmass {
             influenceFalloff: this.params.heightMapParameters.influenceFalloff,
             scaleFalloff: this.params.heightMapParameters.scaleFalloff,
             amplitude: this.params.heightMapParameters.amplitude,
-            heightPower: this.params.heightParameters?.heightPower ?? this.params.heightMapParameters.heightPower,
+            heightPower: this.params.heightParameters?.heightPower ??
+                this.params.heightMapParameters.heightPower,
 
             // Erosion - hydraulic
             dropsPerCell: this.params.erosionHydraulicParameters.dropsPerCell,
-            erosionRate: this.params.erosionRate ?? this.params.erosionHydraulicParameters.erosionRate,
-            depositionRate: this.params.depositionRate ?? this.params.erosionHydraulicParameters.depositionRate,
+            erosionRate: this.params.erosionRate ??
+                this.params.erosionHydraulicParameters.erosionRate,
+            depositionRate: this.params.depositionRate ??
+                this.params.erosionHydraulicParameters.depositionRate,
             speed: this.params.erosionHydraulicParameters.speed,
             friction: this.params.erosionHydraulicParameters.friction,
             radius: this.params.erosionHydraulicParameters.radius,
             maxIterations: this.params.erosionHydraulicParameters.maxIterations,
-            iterationScale: this.params.erosionHydraulicParameters.iterationScale,
+            iterationScale:
+                this.params.erosionHydraulicParameters.iterationScale,
 
             // Erosion - coastal
             waveHeightMin: this.params.erosionCoastalParameters.waveHeightMin,
@@ -844,79 +861,115 @@ export class Landmass {
 
             // Volcanoes
             volcanoThreshold: this.params.volcanoesParameters.volcanoThreshold,
-            volcanoThresholdAmplitude: this.params.volcanoesParameters.volcanoThresholdAmplitude,
-            volcanoThresholdScale: this.params.volcanoesParameters.volcanoThresholdScale,
+            volcanoThresholdAmplitude:
+                this.params.volcanoesParameters.volcanoThresholdAmplitude,
+            volcanoThresholdScale:
+                this.params.volcanoesParameters.volcanoThresholdScale,
             volcanoMaxDepth: this.params.volcanoesParameters.volcanoMaxDepth,
-            volcanoCraterScale: this.params.volcanoesParameters.volcanoCraterScale,
+            volcanoCraterScale:
+                this.params.volcanoesParameters.volcanoCraterScale,
 
             // Seabed shaping
             seabedWallWidth: this.size * 0.6,
             seabedDepth: this.size * 2,
             seabedExponent: 3,
-            waterline: 3
+            waterline: 3,
         };
 
         const rebuild = () => {
             this.dispose();
-            const hmParams = new HeightMapParameters(params.octaves, params.scale, params.influenceFalloff, params.scaleFalloff, params.amplitude, params.heightPower);
+            const hmParams = new HeightMapParameters(
+                params.octaves,
+                params.scale,
+                params.influenceFalloff,
+                params.scaleFalloff,
+                params.amplitude,
+                params.heightPower,
+            );
 
-            const hydroParams = new ErosionHydraulicParameters(params.dropsPerCell, params.erosionRate, params.depositionRate, params.speed, params.friction, params.radius, params.maxIterations, params.iterationScale);
+            const hydroParams = new ErosionHydraulicParameters(
+                params.dropsPerCell,
+                params.erosionRate,
+                params.depositionRate,
+                params.speed,
+                params.friction,
+                params.radius,
+                params.maxIterations,
+                params.iterationScale,
+            );
 
-            const coastalParams = new ErosionCoastalParameters(params.waveHeightMin, params.waveHeightMax, params.noiseScale, params.coastalPower);
+            const coastalParams = new ErosionCoastalParameters(
+                params.waveHeightMin,
+                params.waveHeightMax,
+                params.noiseScale,
+                params.coastalPower,
+            );
 
-            const volcParams = new VolcanoesParameters(params.volcanoThreshold, params.volcanoThresholdAmplitude, params.volcanoThresholdScale, params.volcanoMaxDepth, params.volcanoCraterScale);
+            const volcParams = new VolcanoesParameters(
+                params.volcanoThreshold,
+                params.volcanoThresholdAmplitude,
+                params.volcanoThresholdScale,
+                params.volcanoMaxDepth,
+                params.volcanoCraterScale,
+            );
 
             this.params = {
                 shapePower: params.shapePower,
                 heightMapParameters: hmParams,
                 erosionHydraulicParameters: hydroParams,
                 erosionCoastalParameters: coastalParams,
-                volcanoesParameters: volcParams
+                volcanoesParameters: volcParams,
             };
 
             this._buildTerrain(this.params);
-
-          
         };
 
-
-
         // GUI layout
-        const fShape = folder.addFolder('Shape');
-        fShape.add(params, 'shapePower', 0.1, 8, 0.1).onChange(rebuild);
+        const fShape = folder.addFolder("Shape");
+        fShape.add(params, "shapePower", 0.1, 8, 0.1).onChange(rebuild);
 
-        const fNoise = folder.addFolder('Noise Basis');
-        fNoise.add(params, 'octaves', 1, 12, 1).onChange(rebuild);
-        fNoise.add(params, 'scale', 0.001, 2.0, 0.001).onChange(rebuild);
-        fNoise.add(params, 'influenceFalloff', 0.1, 2.0, 0.01).onChange(rebuild);
-        fNoise.add(params, 'scaleFalloff', 0.5, 5.0, 0.01).onChange(rebuild);
-        fNoise.add(params, 'amplitude', 1, 300, 1).onChange(rebuild);
-        fNoise.add(params, 'heightPower', 0.1, 10, 0.1).onChange(rebuild);
+        const fNoise = folder.addFolder("Noise Basis");
+        fNoise.add(params, "octaves", 1, 12, 1).onChange(rebuild);
+        fNoise.add(params, "scale", 0.001, 2.0, 0.001).onChange(rebuild);
+        fNoise.add(params, "influenceFalloff", 0.1, 2.0, 0.01).onChange(
+            rebuild,
+        );
+        fNoise.add(params, "scaleFalloff", 0.5, 5.0, 0.01).onChange(rebuild);
+        fNoise.add(params, "amplitude", 1, 300, 1).onChange(rebuild);
+        fNoise.add(params, "heightPower", 0.1, 10, 0.1).onChange(rebuild);
 
-        const fErosionH = folder.addFolder('Erosion — Hydraulic');
-        fErosionH.add(params, 'dropsPerCell', 0.1, 1.0, 0.01).onChange(rebuild);
-        fErosionH.add(params, 'erosionRate', 0.001, 0.5, 0.001).onChange(rebuild);
-        fErosionH.add(params, 'depositionRate', 0.001, 0.5, 0.001).onChange(rebuild);
-        fErosionH.add(params, 'speed', 0.01, 1.0, 0.01).onChange(rebuild);
-        fErosionH.add(params, 'friction', 0.0, 1.0, 0.01).onChange(rebuild);
-        fErosionH.add(params, 'radius', 0.1, 5.0, 0.1).onChange(rebuild);
-        fErosionH.add(params, 'maxIterations', 10, 300, 1).onChange(rebuild);
-        fErosionH.add(params, 'iterationScale', 0.001, 0.2, 0.001).onChange(rebuild);
+        const fErosionH = folder.addFolder("Erosion — Hydraulic");
+        fErosionH.add(params, "dropsPerCell", 0.1, 1.0, 0.01).onChange(rebuild);
+        fErosionH.add(params, "erosionRate", 0.001, 0.5, 0.001).onChange(
+            rebuild,
+        );
+        fErosionH.add(params, "depositionRate", 0.001, 0.5, 0.001).onChange(
+            rebuild,
+        );
+        fErosionH.add(params, "speed", 0.01, 1.0, 0.01).onChange(rebuild);
+        fErosionH.add(params, "friction", 0.0, 1.0, 0.01).onChange(rebuild);
+        fErosionH.add(params, "radius", 0.1, 5.0, 0.1).onChange(rebuild);
+        fErosionH.add(params, "maxIterations", 10, 300, 1).onChange(rebuild);
+        fErosionH.add(params, "iterationScale", 0.001, 0.2, 0.001).onChange(
+            rebuild,
+        );
 
-        const fErosionC = folder.addFolder('Erosion — Coastal');
-        fErosionC.add(params, 'waveHeightMin', 0.0, 5.0, 0.1).onChange(rebuild);
-        fErosionC.add(params, 'waveHeightMax', 0.0, 5.0, 0.1).onChange(rebuild);
-        fErosionC.add(params, 'noiseScale', 0.01, 2.0, 0.01).onChange(rebuild);
-        fErosionC.add(params, 'coastalPower', 0.1, 10, 0.1).onChange(rebuild);
+        const fErosionC = folder.addFolder("Erosion — Coastal");
+        fErosionC.add(params, "waveHeightMin", 0.0, 5.0, 0.1).onChange(rebuild);
+        fErosionC.add(params, "waveHeightMax", 0.0, 5.0, 0.1).onChange(rebuild);
+        fErosionC.add(params, "noiseScale", 0.01, 2.0, 0.01).onChange(rebuild);
+        fErosionC.add(params, "coastalPower", 0.1, 10, 0.1).onChange(rebuild);
 
-        const fVolc = folder.addFolder('Volcanoes');
-        fVolc.add(params, 'volcanoThreshold', 0, 10, 0.1).onChange(rebuild);
-        fVolc.add(params, 'volcanoThresholdAmplitude', 0, 10, 0.1).onChange(rebuild);
-        fVolc.add(params, 'volcanoThresholdScale', 0.01, 5, 0.01).onChange(rebuild);
-        fVolc.add(params, 'volcanoMaxDepth', 0, 5, 0.05).onChange(rebuild);
-        fVolc.add(params, 'volcanoCraterScale', 0.1, 3, 0.05).onChange(rebuild);
-
-
+        const fVolc = folder.addFolder("Volcanoes");
+        fVolc.add(params, "volcanoThreshold", 0, 10, 0.1).onChange(rebuild);
+        fVolc.add(params, "volcanoThresholdAmplitude", 0, 10, 0.1).onChange(
+            rebuild,
+        );
+        fVolc.add(params, "volcanoThresholdScale", 0.01, 5, 0.01).onChange(
+            rebuild,
+        );
+        fVolc.add(params, "volcanoMaxDepth", 0, 5, 0.05).onChange(rebuild);
+        fVolc.add(params, "volcanoCraterScale", 0.1, 3, 0.05).onChange(rebuild);
 
         folder
             .add(
@@ -924,11 +977,11 @@ export class Landmass {
                     randomizeSeed: () => {
                         this.seed = Math.floor(Math.random() * 0xffffffff);
                         rebuild();
-                    }
+                    },
                 },
-                'randomizeSeed'
+                "randomizeSeed",
             )
-            .name('🎲 New Seed');
+            .name("🎲 New Seed");
 
         folder.open();
     }
