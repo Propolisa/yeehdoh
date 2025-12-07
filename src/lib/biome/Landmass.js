@@ -1,6 +1,13 @@
 // biome/Landmass.js
 import { WINDOW_CONTEXT } from "@/lib/helpers"; // same as Water
-import { Engine, RawTexture, Scene, Texture } from "@babylonjs/core";
+import {
+    Engine,
+    RawTexture,
+    Scene,
+    Texture,
+    Vector3,
+    VertexBuffer,
+} from "@babylonjs/core";
 import GUI from "lil-gui";
 import { applyProceduralPBR, SkirtForHeightmap } from "./SkirtFromHeightmap";
 /**
@@ -342,7 +349,9 @@ class HeightMap {
                 let scale = this.parameters.scale * this.resolution;
                 let height = 0;
                 for (
-                    let octave = 0; octave < this.parameters.octaves; ++octave
+                    let octave = 0;
+                    octave < this.parameters.octaves;
+                    ++octave
                 ) {
                     height += noises[octave].sample(x * scale, y * scale) *
                         influences[octave];
@@ -505,8 +514,7 @@ class Volcanoes {
         for (let y = 0; y < heightMap.yValues; ++y) {
             for (let x = 0; x < heightMap.xValues; ++x) {
                 const height = heightMap.values[x + y * heightMap.xValues];
-                const threshold =
-                    (2 *
+                const threshold = (2 *
                                 rimNoise.sample(
                                     x * heightMap.resolution *
                                         this.parameters.volcanoThresholdScale,
@@ -602,7 +610,10 @@ export class Landmass {
      */
     constructor(scene, opts = {}) {
         this.scene = scene;
-        this.size = opts.size ?? 50; // match upstream width default
+        this.surfaceSampler = null;
+        this.surfaceTriangles = null;
+
+        this.size = opts.size ?? 25; // match upstream width default
         this.subdivisions = opts.subdivisions ?? Math.ceil(this.size / 0.1); // since resolution = 0.1 => subdivisions = size/0.1
         this.seed = (opts.seed ?? Math.floor(Math.random() * 0xffffffff)) >>> 0;
         this.mesh = null;
@@ -657,7 +668,7 @@ export class Landmass {
         this.params = params;
 
         // Build the initial terrain
-        this._buildTerrain(params);
+        this.onBuildCompleteObservable = this._buildTerrain(params);
 
         this.attachGUI();
     }
@@ -671,6 +682,34 @@ export class Landmass {
             this.mesh.dispose();
             this.mesh = null;
         }
+    }
+
+    /**
+     * Returns a random point ON the terrain surface (above water),
+     * transformed by the island mesh's world matrix.
+     */
+    getRandomSurfacePoint() {
+        const mesh = this.heightmap_skirt?.hexMesh;
+        const sampler = this.surfaceSampler;
+
+        if (!mesh || !sampler || !this.surfaceTriangles) {
+            console.warn("Surface sampler not ready, returning origin.");
+            return new Vector3(0, 0, 0);
+        }
+
+        mesh.computeWorldMatrix(true);
+        const world = mesh.getWorldMatrix();
+
+        // pick triangle by area-weighted probability
+        const triIndex = sampleRandomTriangle(sampler);
+        const [p0, p1, p2] = this.surfaceTriangles[triIndex];
+
+        // random barycentric position
+        const localPt = samplePointInTriangle(p0, p1, p2);
+
+        // Transform to world-space
+        const worldPt = Vector3.TransformCoordinates(localPt, world);
+        return worldPt;
     }
 
     _buildTerrain(paramOverrides) {
@@ -707,7 +746,7 @@ export class Landmass {
 
         this.heightmap_skirt = this.heightmap_skirt ||
             new SkirtForHeightmap(this.heightmapDebugTexture, this.scene);
-        this._waitForTexture(this.heightmapDebugTexture)
+        return this._waitForTexture(this.heightmapDebugTexture)
             .then(() =>
                 this.heightmap_skirt.initialized
                     ? this.heightmap_skirt.update(this.heightmapDebugTexture)
@@ -715,10 +754,89 @@ export class Landmass {
                         this.heightmapDebugTexture,
                     )
             ).then((mesh) => {
-                applyProceduralPBR(mesh, this.scene);
+                applyProceduralPBR(mesh, this.scene, { useTextureBake: true });
+            })
+            .then(() => {
+                this._rebuildSurfaceSampler();
             });
 
         // this._conformUnderwaterToCircularBasin();
+    }
+
+    _rebuildSurfaceSampler() {
+        const mesh = this.heightmap_skirt?.hexMesh;
+        if (!mesh) return;
+
+        const positions = mesh.getVerticesData(VertexBuffer.PositionKind);
+        const indices = mesh.getIndices();
+        if (!positions || !indices) return;
+
+        const world = mesh.getWorldMatrix();
+        const waterline = this.params?.waterline ?? 0.5;
+
+        const triangles = [];
+        const cumulativeAreas = [];
+        let totalArea = 0;
+
+        const posVec = new Vector3();
+
+        function getWorldY(i3) {
+            posVec.set(positions[i3], positions[i3 + 1], positions[i3 + 2]);
+            const wp = Vector3.TransformCoordinates(posVec, world);
+            return wp.y;
+        }
+
+        for (let i = 0; i < indices.length; i += 3) {
+            const i0 = indices[i] * 3;
+            const i1 = indices[i + 1] * 3;
+            const i2 = indices[i + 2] * 3;
+
+            // Only triangles with ALL 3 vertices above water
+            const y0 = getWorldY(i0);
+            const y1 = getWorldY(i1);
+            const y2 = getWorldY(i2);
+
+            if (y0 < waterline || y1 < waterline || y2 < waterline) {
+                continue;
+            }
+
+            const p0 = new Vector3(
+                positions[i0],
+                positions[i0 + 1],
+                positions[i0 + 2],
+            );
+            const p1 = new Vector3(
+                positions[i1],
+                positions[i1 + 1],
+                positions[i1 + 2],
+            );
+            const p2 = new Vector3(
+                positions[i2],
+                positions[i2 + 1],
+                positions[i2 + 2],
+            );
+
+            const area =
+                Vector3.Cross(p1.subtract(p0), p2.subtract(p0)).length() * 0.5;
+            if (area < 1e-8) continue;
+
+            totalArea += area;
+            cumulativeAreas.push(totalArea);
+            triangles.push([p0, p1, p2]);
+        }
+
+        this.surfaceTriangles = triangles;
+        this.surfaceSampler = {
+            cumulativeAreas,
+            totalArea,
+            waterline,
+        };
+
+        if (triangles.length === 0) {
+            console.warn(
+                "⚠ No above-water triangles found — island may be underwater.",
+            );
+        }
     }
 
     _waitForTexture(tex) {
@@ -976,6 +1094,7 @@ export class Landmass {
                 {
                     randomizeSeed: () => {
                         this.seed = Math.floor(Math.random() * 0xffffffff);
+                        console.log(`New volcano seed: ${this.seed}`);
                         rebuild();
                     },
                 },
@@ -985,4 +1104,36 @@ export class Landmass {
 
         folder.open();
     }
+}
+
+function sampleRandomTriangle(sampler) {
+    const r = Math.random() * sampler.totalArea;
+    const arr = sampler.cumulativeAreas;
+
+    // Binary search for triangle index
+    let lo = 0, hi = arr.length - 1;
+    while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (arr[mid] < r) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo;
+}
+
+function samplePointInTriangle(p0, p1, p2) {
+    let u = Math.random();
+    let v = Math.random();
+
+    // Flip to keep it inside the unit triangle
+    if (u + v > 1) {
+        u = 1 - u;
+        v = 1 - v;
+    }
+    const w = 1 - u - v;
+
+    return new Vector3(
+        p0.x * w + p1.x * u + p2.x * v,
+        p0.y * w + p1.y * u + p2.y * v,
+        p0.z * w + p1.z * u + p2.z * v,
+    );
 }

@@ -5,7 +5,9 @@ import {
     EasingFunction,
     EffectRenderer,
     EffectWrapper,
+    Engine,
     ExponentialEase,
+    Matrix,
     Mesh,
     MeshBuilder,
     PBRMaterial,
@@ -13,6 +15,7 @@ import {
     QuadraticEase,
     QuarticEase,
     QuinticEase,
+    RawTexture,
     RenderTargetTexture,
     Scalar,
     ShaderMaterial,
@@ -25,6 +28,7 @@ import {
     VertexData,
 } from "@babylonjs/core";
 
+const IDENTITY = Matrix.Identity();
 export class SkirtForHeightmap {
     constructor(texture, scene, { debug = false } = {}) {
         this.options = { debug };
@@ -66,6 +70,7 @@ export class SkirtForHeightmap {
 
     runJFA(scene, heightmapTex, config = {}) {
         return new Promise((resolve) => {
+
             const padCfg = config.pad ?? 1.0;
             const heightMultiplier = config.heightMultiplier ?? 5.0;
 
@@ -106,14 +111,16 @@ export class SkirtForHeightmap {
             // Preview the seed
             let startX = -12;
             let dx = 6;
-            if (this.options.debug) addPreviewPlane(scene, seedRT, startX + dx * 1, 6, "Seed");
+            if (this.options.debug) {
+                addPreviewPlane(scene, seedRT, startX + dx * 1, 6, "Seed");
+            }
 
             // JFA LOOP
             let jump = Math.pow(2, steps - 1);
 
             // Keep reference to target mesh
             const targetMesh = config.targetMesh;
-
+            targetMesh.scaling.setAll(1)
             const doStep = (i) => {
                 return new Promise((stepResolve) => {
                     const inputRT = stageRTs[i];
@@ -128,7 +135,9 @@ export class SkirtForHeightmap {
                     jfaStep(scene, inputRT, outputRT, jump, async () => {
                         // Last step → composite heightmap
                         if (isLast) {
-                             if (this.options.debug) addDistancePlane(scene, outputRT, 0, -6);
+                            if (this.options.debug) {
+                                addDistancePlane(scene, outputRT, 0, -6);
+                            }
 
                             await buildCompositeHeightmap(
                                 scene,
@@ -150,13 +159,15 @@ export class SkirtForHeightmap {
 
                     stageRTs.push(outputRT);
 
-                     if (this.options.debug) addPreviewPlane(
-                        scene,
-                        outputRT,
-                        startX + dx * (i + 2),
-                        6,
-                        "Step_" + jump,
-                    );
+                    if (this.options.debug) {
+                        addPreviewPlane(
+                            scene,
+                            outputRT,
+                            startX + dx * (i + 2),
+                            6,
+                            "Step_" + jump,
+                        );
+                    }
 
                     jump /= 2;
                 });
@@ -173,9 +184,9 @@ export class SkirtForHeightmap {
     }
 }
 
-let heightmapStrength = 3.5;
-let circleRadius = 12;
-let hexRadius = 0.15;
+let heightmapStrength = 2.5;
+let circleRadius = 50;
+let hexRadius = 0.5;
 const RESOURCES_CACHE = {};
 function registerOrReuseResource(
     scene,
@@ -701,7 +712,7 @@ export function applyHeightmapToMesh(mesh, options = {}) {
     const positions = mesh.getVerticesData(VertexBuffer.PositionKind);
     if (!positions) return;
 
-    const world = mesh.getWorldMatrix();
+    const world = IDENTITY;
     let minX = +Infinity, maxX = -Infinity;
     let minZ = +Infinity, maxZ = -Infinity;
 
@@ -1000,7 +1011,9 @@ function setupHexMesh(scene, camera, skirt) {
         mesh = registerOrReuseResource(
             scene,
             "hexCircleWarped",
-            () => new Mesh("hexCircleWarped", scene),
+            () => {let m  = new Mesh("island", scene)
+               return m
+            },
         );
 
         const oldIndexCount = mesh.getTotalIndices();
@@ -1068,7 +1081,7 @@ function setupHexMesh(scene, camera, skirt) {
 
         if (scene.compositeHeightmap) {
             applyHeightmapToMesh(mesh, { strength: heightmapStrength });
-            applyProceduralPBR(mesh, scene);
+            applyProceduralPBR(mesh, scene, { useTextureBake: true });
         }
     }
 
@@ -1495,192 +1508,463 @@ function setupHexMesh(scene, camera, skirt) {
 // ============================================================================
 
 import { COLORS } from "../colors.js";
-
 /**
- * Create a physically-plausible stylized PBR material using:
- *  - composite height (micro-variation)
- *  - slope (erosion indicator)
- *  - height relative to min/max (biomes)
+ * Full PBR terrain shading:
+ *  - Same logic for vertex colors and baked textures
+ *  - Continuous blending between layers using height + slope + curvature
+ *  - Correct metallic/roughness/AO packing for Babylon PBRMaterial
  *
- * @param {Mesh} mesh
- * @param {Scene} scene
- * @param {object} opts  { waterline?: number }
+ * opts:
+ *   useTextureBake?: boolean
+ *   textureResolution?: number
  */
 export function applyProceduralPBR(mesh, scene, opts = {}) {
     const H = scene.compositeHeightmap;
-    if (!H) return;
-
-    const waterline = opts.waterline ?? 0.5;
-
-    const positions = mesh.getVerticesData(VertexBuffer.PositionKind);
-    const normals = mesh.getVerticesData(VertexBuffer.NormalKind);
-    const vcount = positions.length / 3;
-
-    // -----------------------------------------------------------
-    // PASS 1: compute actual mesh bounding box (LOCAL SPACE)
-    // -----------------------------------------------------------
-    let minY = Infinity, maxY = -Infinity;
-
-    for (let i = 0; i < vcount; i++) {
-        const py = positions[i * 3 + 1];
-        if (py < minY) minY = py;
-        if (py > maxY) maxY = py;
+    if (!H) {
+        console.error("Composite heightmap not ready.");
+        return;
     }
 
-    const heightRange = Math.max(0.00001, maxY - minY);
+    const useTextureBake = opts.useTextureBake ?? false;
+    const texRes = opts.textureResolution ?? 1024;
 
-    console.log("%c[PBR DEBUG] Height Range", "color: #0af", {
-        minY,
-        maxY,
-        heightRange,
-    });
+    // -----------------------------------------------------------------------
+    // ART CONTROLS (what an artist tweaks)
+    // -----------------------------------------------------------------------
+    // Heights in [0..1] over geometry vertical extent.
+    const LAYERS = [
+        {
+            id: "sand",
+            stop: 0.00, // center height of this material band
+            width: 0.50, // how wide its influence is
+            colorLow: Color3.FromHexString(COLORS.peach),
+            colorHigh: Color3.FromHexString(COLORS.fadedOrange),
+            rough: 0.85,
+            metallic: 0.02,
+            ao: 0.9,
+            preferSlope: 0.0, // 0 = flat, 1 = vertical
+            preferCurve: 0.0, // 0 = smooth, 1 = edges/ridges
+        },
+        {
+            id: "grass",
+            stop: 0.50,
+            width: 0.18,
+            colorLow: Color3.FromHexString(COLORS.lightTeal),
+            colorHigh: Color3.FromHexString(COLORS.kermitGreen),
+            rough: 0.65,
+            metallic: 0.02,
+            ao: 0.8,
+            preferSlope: 0.2,
+            preferCurve: 0.2,
+        },
+        {
+            id: "cliff",
+            stop: 0.65,
+            width: 0.25,
+            colorLow: Color3.FromHexString(COLORS.greyblue),
+            colorHigh: Color3.FromHexString(COLORS.blueGreen),
+            rough: 0.9,
+            metallic: 0.08,
+            ao: 0.8,
+            preferSlope: 1.0,
+            preferCurve: 0.7,
+        },
+        {
+            id: "rock",
+            stop: 0.75,
+            width: 5,
+            colorLow: Color3.FromHexString(COLORS.stormyBlue),
+            colorHigh: Color3.FromHexString(COLORS.darkNavyBlue),
+            rough: 0.75,
+            metallic: 0.12,
+            ao: 0.8,
+            preferSlope: 0.6,
+            preferCurve: 0.4,
+        },
+    ];
 
-    // -----------------------------------------------------------
-    // Palette
-    // -----------------------------------------------------------
-    const toC3 = (hex) => Color3.FromHexString(hex);
+    LAYERS.sort((a, b) => a.stop - b.stop);
 
-    const PALETTE = {
-        rockLow: toC3(COLORS.stormyBlue),
-        rockHigh: toC3(COLORS.darkNavyBlue),
+    // -----------------------------------------------
+    // POSTERIZATION SUPPORT
+    // -----------------------------------------------
+    const posterize = opts.posterize ?? false;
 
-        sandLow: toC3(COLORS.peach),
-        sandHigh: toC3(COLORS.fadedOrange),
+    // Convert COLORS {name:"#rrggbb"} → array of Color3
+    const POSTER_PALETTE = Object.values(COLORS).map((hex) =>
+        Color3.FromHexString(hex)
+    );
 
-        grassLow: toC3(COLORS.lightTeal),
-        grassHigh: toC3(COLORS.kermitGreen),
+    // Returns the closest palette color in linear RGB
+    function nearestPaletteColor(c) {
+        let best = null;
+        let bd = Infinity;
 
-        cliffLow: toC3(COLORS.greyblue),
-        cliffHigh: toC3(COLORS.blueGreen),
-    };
+        for (const p of POSTER_PALETTE) {
+            const dr = c.r - p.r;
+            const dg = c.g - p.g;
+            const db = c.b - p.b;
+            const d = dr * dr + dg * dg + db * db; // squared distance
 
-    // -----------------------------------------------------------
-    // Prepare buffers + DEBUG HISTOGRAM
-    // -----------------------------------------------------------
-    const colors = new Float32Array(vcount * 4);
+            if (d < bd) {
+                bd = d;
+                best = p;
+            }
+        }
+        return best.clone();
+    }
 
-    let debugHeights = [];
-    let debugSlopes = [];
-    let biomeCount = { sand: 0, grass: 0, cliff: 0, rock: 0 };
+    // -----------------------------------------------------------------------
+    // SHARED HELPERS
+    // -----------------------------------------------------------------------
 
-    for (let i = 0; i < vcount; i++) {
-        const px = positions[i * 3 + 0];
-        const py = positions[i * 3 + 1];
-        const pz = positions[i * 3 + 2];
+    // --- Fast domain-warped value hash noise (film grain) ---
+    function hash2(x, y) {
+        let h = x * 374761393 + y * 668265263;
+        h = (h ^ (h >> 13)) * 1274126177;
+        return ((h ^ (h >> 16)) >>> 0) / 4294967295;
+    }
 
-        const nx = normals[i * 3 + 0];
-        const ny = normals[i * 3 + 1];
-        const nz = normals[i * 3 + 2];
+    function noise2(u, v) {
+        // Scale domain to break alignment
+        const sx = u * 839.0;
+        const sy = v * 977.0;
 
-        // HEIGHT
-        const hNorm = Scalar.Clamp((py - minY) / heightRange, 0, 1);
-        debugHeights.push(hNorm);
+        // First hash noise sample
+        const h1 = hash2(sx, sy);
 
-        // SLOPE
-        const slope = Math.sqrt(nx * nx + nz * nz);
-        debugSlopes.push(slope);
+        // Domain warp (breaks grid artifacts)
+        const wx = sx + (h1 - 0.5) * 12.7;
+        const wy = sy + (h1 - 0.5) * 14.9;
 
-        let c, roughness, biome;
+        // Second hash gives final grain
+        return hash2(wx, wy);
+    }
 
-        if (hNorm < waterline) {
-            biome = "sand";
+    // Height → soft triangular weight for this layer
+    function heightWeight(h, stop, width) {
+        const d = Math.abs(h - stop) / Math.max(width, 1e-6);
+        return 1.0 - Scalar.Clamp(d, 0.0, 1.0); // 1 at center, 0 at edge
+    }
 
-            const t = hNorm / waterline; // 0 near waterline
+    // How much this layer likes the local slope/curvature
+    function slopeCurvBias(layer, slope01, curv01) {
+        const sb = 1.0 - Math.abs(slope01 - layer.preferSlope);
+        const cb = 1.0 - Math.abs(curv01 - layer.preferCurve);
+        return Scalar.Clamp(0.5 * (sb + cb), 0.0, 1.0);
+    }
 
-            // Base warm sand color (albedo)
-            const warm = Color3.Lerp(
-                Color3.FromHexString(COLORS.peach),
-                Color3.FromHexString(COLORS.fadedOrange),
-                t,
-            );
+    function evalMaterial(hNorm, slope01, curv01, u, v) {
+        let accumW = 0;
+        const Ws = new Array(LAYERS.length);
 
-            // Subtle mineral variation (adds realism)
-            const mineral = Color3.Lerp(
-                warm,
-                Color3.FromHexString(COLORS.offWhite),
-                0.1 + 0.2 * Math.random(), // tiny random variation per-vertex
-            );
+        // raw weights per layer
+        for (let i = 0; i < LAYERS.length; i++) {
+            const L = LAYERS[i];
 
-            // Very subtle cool tint for realism
-            const coolTint = Color3.Lerp(
-                mineral,
-                Color3.FromHexString(COLORS.lightTeal),
-                0.03,
-            );
+            const hw = heightWeight(hNorm, L.stop, L.width);
+            if (hw <= 0.0) {
+                Ws[i] = 0.0;
+                continue;
+            }
 
-            c = coolTint;
+            const pref = slopeCurvBias(L, slope01, curv01);
+            const n = noise2(u * 5.0, v * 5.0); // 0..1
+            const noiseBias = Scalar.Lerp(0.9, 1.1, n); // subtle
 
-            // Roughness: dry → wet range
-            const dryR = 0.9; // dry sand
-            const wetR = 0.7; // slightly darker near waterline
-            roughness = Scalar.Lerp(wetR, dryR, t);
-
-            // Metallic always 0 for sand (dielectric)
-        } else if (slope > 0.55) {
-            biome = "cliff";
-            const t = Scalar.Clamp((slope - 0.55) * 2.0, 0, 1);
-            c = Color3.Lerp(PALETTE.cliffLow, PALETTE.cliffHigh, t);
-            roughness = 0.9;
-        } else if (hNorm > 0.7) {
-            biome = "rock";
-            const t = Scalar.Clamp((hNorm - 0.7) * 3.0, 0, 1);
-            c = Color3.Lerp(PALETTE.rockLow, PALETTE.rockHigh, t);
-            roughness = 0.75;
-        } else {
-            biome = "grass";
-            const t = Scalar.Clamp(
-                (hNorm - waterline) / (0.7 - waterline),
-                0,
-                1,
-            );
-            c = Color3.Lerp(PALETTE.grassLow, PALETTE.grassHigh, t);
-            roughness = 0.6;
+            const w = hw * (0.5 + 0.5 * pref) * noiseBias;
+            Ws[i] = Math.max(w, 0.0);
+            accumW += Ws[i];
         }
 
-        biomeCount[biome]++;
+        if (accumW < 1e-6) {
+            // fallback: choose closest stop
+            let best = 0;
+            let bd = 1e9;
+            for (let i = 0; i < LAYERS.length; i++) {
+                const d = Math.abs(hNorm - LAYERS[i].stop);
+                if (d < bd) {
+                    bd = d;
+                    best = i;
+                }
+            }
+            Ws[best] = 1.0;
+            accumW = 1.0;
+        }
 
-        // STORE
-        colors[i * 4 + 0] = c.r;
-        colors[i * 4 + 1] = c.g;
-        colors[i * 4 + 2] = c.b;
-        colors[i * 4 + 3] = roughness;
+        // normalize weights
+        for (let i = 0; i < LAYERS.length; i++) {
+            Ws[i] /= accumW;
+        }
+
+        // accumulate outputs
+        let color = new Color3(0, 0, 0);
+        let rough = 0;
+        let metallic = 0;
+        let ao = 0;
+
+        for (let i = 0; i < LAYERS.length; i++) {
+            const L = LAYERS[i];
+            const w = Ws[i];
+            if (w <= 0.0) continue;
+
+            // gradient within the band (local height)
+            const bandT = Scalar.InverseLerp(
+                L.stop - L.width,
+                L.stop + L.width,
+                hNorm,
+            );
+            const baseCol = Color3.Lerp(
+                L.colorLow,
+                L.colorHigh,
+                Scalar.Clamp(bandT, 0.0, 1.0),
+            );
+
+            const n = noise2(u * 8.0, v * 8.0);
+            const noisyCol = Color3.Lerp(
+                baseCol,
+                Color3.White(),
+                (n - 0.5) * 0.1, // small shift
+            );
+
+            color = color.add(noisyCol.scale(w));
+            rough += L.rough * w;
+            metallic += L.metallic * w;
+            ao += L.ao * w;
+        }
+
+        rough = Scalar.Clamp(rough, 0.02, 1.0);
+        metallic = Scalar.Clamp(metallic, 0.0, 1.0);
+        ao = Scalar.Clamp(ao, 0.0, 1.0);
+
+        return { color, rough, metallic, ao };
     }
 
-    mesh.setVerticesData(VertexBuffer.ColorKind, colors, true);
+    // Local-space planar UVs (XZ) so texture ↔ world alignment matches vertex sampling
+    function ensurePlanarUVs(mesh) {
+        const positions = mesh.getVerticesData(VertexBuffer.PositionKind);
+        if (!positions) return;
 
-    // -----------------------------------------------------------
-    // DEBUG OUTPUT
-    // -----------------------------------------------------------
+        let minX = Infinity, maxX = -Infinity;
+        let minZ = Infinity, maxZ = -Infinity;
 
-    // Show a small sample:
-    console.log(
-        "%c[PBR DEBUG] Sample hNorm values",
-        "color:#0bf",
-        debugHeights.slice(0, 20),
+        for (let i = 0; i < positions.length; i += 3) {
+            const x = positions[i];
+            const z = positions[i + 2];
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (z < minZ) minZ = z;
+            if (z > maxZ) maxZ = z;
+        }
+
+        const vcount = positions.length / 3;
+        const uvs = new Float32Array(vcount * 2);
+        let k = 0;
+
+        for (let i = 0; i < positions.length; i += 3) {
+            const x = positions[i];
+            const z = positions[i + 2];
+            const u = Scalar.InverseLerp(minX, maxX, x);
+            const v = Scalar.InverseLerp(minZ, maxZ, z);
+            uvs[k++] = u;
+            uvs[k++] = v;
+        }
+
+        mesh.setVerticesData(VertexBuffer.UVKind, uvs, true);
+    }
+
+    // Slope + curvature from heightmap using finite differences
+    function sampleSlopeCurv(H, u, v) {
+        const epsU = 1.0 / H.width;
+        const epsV = 1.0 / H.height;
+
+        const hC = H.sampleUV(u, v);
+        const hL = H.sampleUV(u - epsU, v);
+        const hR = H.sampleUV(u + epsU, v);
+        const hD = H.sampleUV(u, v - epsV);
+        const hU = H.sampleUV(u, v + epsV);
+
+        const dx = hR - hL;
+        const dy = hU - hD;
+
+        const slope = Scalar.Clamp(Math.sqrt(dx * dx + dy * dy) * 10.0, 0, 1);
+
+        const dxx = hR + hL - 2.0 * hC;
+        const dyy = hU + hD - 2.0 * hC;
+        const curv = Scalar.Clamp((Math.abs(dxx) + Math.abs(dyy)) * 50.0, 0, 1);
+
+        return { slope01: slope, curv01: curv };
+    }
+
+    // -----------------------------------------------------------------------
+    // PATH 1: VERTEX COLORS (same field, sampled per-vertex)
+    // -----------------------------------------------------------------------
+    if (!useTextureBake) {
+        const positions = mesh.getVerticesData(VertexBuffer.PositionKind);
+        const normals = mesh.getVerticesData(VertexBuffer.NormalKind);
+        if (!positions || !normals) return;
+
+        const vcount = positions.length / 3;
+
+        let minY = Infinity, maxY = -Infinity;
+        for (let i = 0; i < vcount; i++) {
+            const py = positions[i * 3 + 1];
+            if (py < minY) minY = py;
+            if (py > maxY) maxY = py;
+        }
+        const heightRange = Math.max(maxY - minY, 1e-5);
+
+        const colors = new Float32Array(vcount * 4);
+
+        for (let i = 0; i < vcount; i++) {
+            const px = positions[i * 3 + 0];
+            const py = positions[i * 3 + 1];
+            const pz = positions[i * 3 + 2];
+
+            const nx = normals[i * 3 + 0];
+            const ny = normals[i * 3 + 1];
+            const nz = normals[i * 3 + 2];
+
+            const hNorm = Scalar.Clamp((py - minY) / heightRange, 0, 1);
+
+            const slope01 = Scalar.Clamp(Math.sqrt(nx * nx + nz * nz), 0, 1);
+            const curv01 = Scalar.Clamp(1.0 - Math.abs(ny), 0, 1);
+
+            const u = px * 0.02;
+            const v = pz * 0.02;
+
+            let { color, rough } = evalMaterial(hNorm, slope01, curv01, u, v);
+
+            // POSTERIZATION
+            if (posterize) {
+                color = nearestPaletteColor(color);
+            }
+
+            const idx = i * 4;
+            colors[idx + 0] = color.r;
+            colors[idx + 1] = color.g;
+            colors[idx + 2] = color.b;
+            colors[idx + 3] = rough;
+        }
+
+        mesh.setVerticesData(VertexBuffer.ColorKind, colors, true);
+
+        let mat = mesh.material;
+        if (!(mat instanceof PBRMaterial)) {
+            mat = new PBRMaterial("proceduralPBR", scene);
+            mesh.material = mat;
+        }
+
+        mat.useVertexColors = true;
+        mat.metallic = 0.0;
+        mat.roughness = 1.0;
+        mat.useRoughnessFromMetallicTextureAlpha = false;
+        
+        mesh.scaling.setAll(10);
+        return mat;
+    }
+
+    // -----------------------------------------------------------------------
+    // PATH 2: TEXTURE BAKE (same field, sampled in UV / top-down domain)
+    // -----------------------------------------------------------------------
+
+    const albedo = new Uint8Array(texRes * texRes * 4);
+    const orm = new Uint8Array(texRes * texRes * 4); // R=AO, G=Rough, B=Metal, A=1
+
+    for (let y = 0; y < texRes; y++) {
+        for (let x = 0; x < texRes; x++) {
+            const u = x / (texRes - 1);
+            const v = y / (texRes - 1);
+
+            const hNorm = Scalar.Clamp(H.sampleUV(u, v), 0, 1);
+            const { slope01, curv01 } = sampleSlopeCurv(H, u, v);
+
+            let { color, rough, metallic, ao } = evalMaterial(
+                hNorm,
+                slope01,
+                curv01,
+                u,
+                v,
+            );
+
+            // POSTERIZATION
+            if (posterize) {
+                color = nearestPaletteColor(color);
+            }
+
+            const idx = (y * texRes + x) * 4;
+
+            albedo[idx + 0] = (color.r * 255) | 0;
+            albedo[idx + 1] = (color.g * 255) | 0;
+            albedo[idx + 2] = (color.b * 255) | 0;
+            albedo[idx + 3] = 255;
+
+            orm[idx + 0] = (ao * 255) | 0; // AO
+            orm[idx + 1] = (rough * 255) | 0; // Roughness
+            orm[idx + 2] = (metallic * 255) | 0; // Metallic
+            orm[idx + 3] = 255;
+        }
+    }
+
+    const albedoTex = registerOrReuseResource(
+        scene,
+        "albedoTex",
+        () =>
+            new RawTexture(
+                albedo,
+                texRes,
+                texRes,
+                Engine.TEXTUREFORMAT_RGBA,
+                scene,
+                true, // generateMipMaps
+                false, // invertY
+                Texture.BILINEAR_SAMPLINGMODE,
+                Engine.TEXTURETYPE_UNSIGNED_BYTE,
+            ),
     );
 
-    console.log(
-        "%c[PBR DEBUG] Sample slopes",
-        "color:#0bf",
-        debugSlopes.slice(0, 20),
+    albedoTex.gammaSpace = true; // sRGB
+
+    const ormTex = registerOrReuseResource(
+        scene,
+        "ormTex",
+        () =>
+            new RawTexture(
+                orm,
+                texRes,
+                texRes,
+                Engine.TEXTUREFORMAT_RGBA,
+                scene,
+                true,
+                false,
+                Texture.BILINEAR_SAMPLINGMODE,
+                Engine.TEXTURETYPE_UNSIGNED_BYTE,
+            ),
     );
+    ormTex.gammaSpace = false; // linear
 
-    console.log("%c[PBR DEBUG] Biome Histogram", "color:#fa0", biomeCount);
+    ensurePlanarUVs(mesh);
 
-    // -----------------------------------------------------------
-    // PBR Setup
-    // -----------------------------------------------------------
     let mat = mesh.material;
     if (!(mat instanceof PBRMaterial)) {
         mat = new PBRMaterial("proceduralPBR", scene);
         mesh.material = mat;
     }
 
-    mat.useVertexColors = true;
-    mat.metallic = 0.05;
-    mat.roughness = 1.0;
-    mat.useRoughnessFromMetallicTextureAlpha = true;
+    mat.useVertexColors = false;
 
+    mat.albedoTexture = albedoTex;
+    mat.metallicTexture = ormTex;
+
+    // PBR packing: R=AO, G=Roughness, B=Metallic
+    mat.useAmbientOcclusionFromMetallicTextureRed = true;
+    mat.useRoughnessFromMetallicTextureAlpha = false;
+    mat.useRoughnessFromMetallicTextureGreen = true;
+    mat.useMetallnessFromMetallicTextureBlue = true;
+    mat.useAmbientInGrayScale = true;
+
+    mat.metallic = 0.0; // base; overridden per-pixel from packed texture
+    mesh.scaling.setAll(10);
     return mat;
 }
 
@@ -1700,7 +1984,7 @@ function generatePlanarUVs(mesh, bounds) {
 
         const world = Vector3.TransformCoordinates(
             new Vector3(x, positions[i + 1], z),
-            mesh.getWorldMatrix()
+            IDENTITY,
         );
 
         const u = Scalar.InverseLerp(minX, maxX, world.x);
@@ -1711,4 +1995,29 @@ function generatePlanarUVs(mesh, bounds) {
     }
 
     mesh.setVerticesData(VertexBuffer.UVKind, uvs, true);
+}
+
+// --- Heightmap slope & curvature sampling (finite differences) ---
+function sampleSlopeCurv(H, u, v) {
+    const epsU = 1.0 / H.width;
+    const epsV = 1.0 / H.height;
+
+    const hC = H.sampleUV(u, v);
+
+    const hL = H.sampleUV(u - epsU, v);
+    const hR = H.sampleUV(u + epsU, v);
+    const hD = H.sampleUV(u, v - epsV);
+    const hU = H.sampleUV(u, v + epsV);
+
+    // Slope from gradient magnitude
+    const dx = hR - hL;
+    const dy = hU - hD;
+    const slope = Scalar.Clamp(Math.sqrt(dx * dx + dy * dy) * 10.0, 0, 1);
+
+    // Curvature = Laplacian magnitude
+    const dxx = hR + hL - 2 * hC;
+    const dyy = hU + hD - 2 * hC;
+    const curv = Scalar.Clamp((Math.abs(dxx) + Math.abs(dyy)) * 50.0, 0, 1);
+
+    return { slope01: slope, curv01: curv };
 }

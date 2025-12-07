@@ -50,8 +50,8 @@ onMounted(async () => {
     await new Promise((r) => setTimeout(r, 0));
 
     // inside onMounted:
-    engine = new Engine(canvas.value, true);
-    engine.setHardwareScalingLevel(1 / window.devicePixelRatio); // ✅ High-DPI fix
+    engine = new Engine(canvas.value, true); 
+    engine.setHardwareScalingLevel(2 / window.devicePixelRatio); // ✅ High-DPI fix
     let scene = await createScene(engine, canvas.value);
     setupDebugTrigger(scene);
 

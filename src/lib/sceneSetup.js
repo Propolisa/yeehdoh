@@ -10,6 +10,7 @@ import {
     Color3,
     Color4,
     CubicEase,
+    DirectionalLight,
     EasingFunction,
     HemisphericLight,
     MaterialPluginBase,
@@ -20,6 +21,7 @@ import {
     Ray,
     Scalar,
     Scene,
+    ShadowGenerator,
     StandardMaterial,
     Tools,
     Vector2,
@@ -475,9 +477,36 @@ export var createScene = function (engine, canvas) {
     canvas.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
 
     camera.attachControl(canvas, true);
-    const hemi = new HemisphericLight('light', new Vector3(0.2, 1, 0.1), scene);
-    hemi.intensity = 0.3;
+    // const hemi = new HemisphericLight('light', new Vector3(0.2, 1, 0.1), scene);
+    // hemi.intensity = 1;
    
+    const sun = new DirectionalLight('sun', new Vector3(-1, -2, -1), scene);
+    sun.intensity = 1.5
+    sun.position = new Vector3(50, 100, 0);
+     const shadowGen = new ShadowGenerator(1024, sun); // lower res = faster & softer
+        shadowGen.useBlurExponentialShadowMap = true; // softer penumbra blur
+        shadowGen.blurKernel = 4; // increase for softness
+        shadowGen.blurScale = 5.0; // 1 = moderate blur, >1 = more diffuse
+        shadowGen.setDarkness(0.4);
+        shadowGen.bias = 0.001;
+        shadowGen.normalBias = 0.01;
+        // --- 🪴 Automatically register all new meshes as shadow casters if desired ---
+        scene.onNewMeshAddedObservable.add((m) => {
+          // skip invisible meshes or water
+          if (m.name === "island") m.receiveShadows = true;
+          if (
+            !m || m.name === "island" || m.name === "skyBox" || m.name.toLowerCase().includes("water") ||
+            m.name.toLowerCase().includes("fish")
+          ) return;
+          
+          // heuristics: only cast shadows if not flat ground
+          if (
+            m.isVisible && m.getTotalVertices() > 0 &&
+            !shadowGen.getShadowMap().renderList.includes(m)
+          ) {
+            shadowGen.addShadowCaster(m, true);
+          }
+        });
 
     setupTrees(scene);
 

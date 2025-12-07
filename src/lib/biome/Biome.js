@@ -91,17 +91,18 @@ export class Biome {
 
         // Create landmass
         this.landmass = new Landmass(scene, this.def.landmass || {});
+        await this.landmass.onBuildCompleteObservable 
         scene.activeLandmass = this.landmass;
 
         // Create water (if defined in ambience)
-        // if (this.def.ambience?.water) {
-        //     this.water = new Water(scene, this.def.ambience.water);
-        //     scene.activeWater = this.water.mesh;
-        // }
+        if (this.def.ambience?.water) {
+            this.water = new Water(scene, this.def.ambience.water);
+            scene.activeWater = this.water.mesh;
+        }
 
         // Create sky
         this.sky = new Sky(scene, this.def.ambience?.sky || {});
-
+       
         // Spawn entities
         if (Array.isArray(this.def.entities)) {
             for (const ent of this.def.entities) {
@@ -109,8 +110,8 @@ export class Biome {
                 if (!cls) continue;
 
                 const overrides = typeof ent.overrides === 'function' ? ent.overrides(scene, this.landmass) : (ent.overrides ?? {});
-
-                const instance = new cls(scene, this.landmass.getRandomSurfacePoint(), {
+                for (let i = 0; i < 10; i++) {
+                    const instance = new cls(scene, this.landmass.getRandomSurfacePoint(), {
                     scene,
                     biome: this,
                     overrides,
@@ -118,6 +119,9 @@ export class Biome {
                 });
 
                 this.entities.push(instance);
+                    
+                }
+                
             }
         }
 

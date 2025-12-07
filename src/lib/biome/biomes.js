@@ -39,7 +39,7 @@ export const biomes = {
       },
     },
     landmass: {
-      seed: 8271,
+      seed: 1003353377,//665770170 hole in one,
       class: "IslandVolcanic",
     },
     entities: [

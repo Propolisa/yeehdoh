@@ -15,7 +15,7 @@ export class Water {
         this.level = opts.level ?? 0;
 
         // === Mesh ===
-        this.mesh = this._makeCircularMesh(scene, 'water', this.radius, 256, 256);
+        this.mesh = this._makeCircularMesh(scene, 'water', this.radius, 64, 64);
         this.mesh.position.y = this.level;
 
         // === Register shaders ===
@@ -307,7 +307,7 @@ export class Water {
     }
 
     /** Circular water surface (double-sided), same topology approach */
-    _makeCircularMesh(scene, name, radius = 128, radialSegments = 80, ringSegments = 80, edgeDepth = 2000) {
+    _makeCircularMesh(scene, name, radius = 128, radialSegments = 10, ringSegments = 10, edgeDepth = 2000) {
         const positions = [];
         const indices = [];
         const uvs = [];

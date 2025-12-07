@@ -5,6 +5,7 @@ import {
   GPUParticleSystem,
   Mesh,
   ShaderMaterial,
+  ShadowGenerator,
   Texture,
   Vector3,
 } from "@babylonjs/core";
@@ -13,6 +14,7 @@ export class Sky {
   constructor(scene, options) {
     // 🌌 Create the gradient sky sphere
     const skybox = Mesh.CreateSphere("skyBox", 10.0, 800, scene);
+   
 
     Effect.ShadersStore.gradientVertexShader = `
       precision mediump float;
@@ -48,67 +50,82 @@ export class Sky {
     skyGradient.setColor3("bottomColor", Color3.FromInts(123, 173, 233));
     skyGradient.backFaceCulling = false;
     skybox.material = skyGradient;
-   {
-    // 🌥️ 4K cloud textures
-    const cloudImages = ["76.png", "77.png", "78.png", "79.png", "85.png", "86.png", "87.png"];
-    const basePath = "/yeehdoh/images/clouds/";
+    {
+      // 🌥️ 4K cloud textures
+      const cloudImages = [
+        "76.png",
+        "77.png",
+        "78.png",
+        "79.png",
+        "85.png",
+        "86.png",
+        "87.png",
+      ];
+      const basePath = "/yeehdoh/images/clouds/";
 
-    // Invisible emitter placeholder
-    const emitter = Mesh.CreateBox("cloudEmitter", 0.01, scene);
-    emitter.visibility = 0;
+      // Invisible emitter placeholder
+      const emitter = Mesh.CreateBox("cloudEmitter", 0.01, scene);
+      emitter.visibility = 0;
 
-    // ☁️ Create one GPU particle system per texture
-    cloudImages.forEach((img) => {
-      const texture = new Texture(new URL(`${basePath}${img}`, window.location.href).href, scene);
-      const sys = new GPUParticleSystem(`clouds_${img}`, { capacity: 50000 }, scene);
+      // ☁️ Create one GPU particle system per texture
+      cloudImages.forEach((img) => {
+        const texture = new Texture(
+          new URL(`${basePath}${img}`, window.location.href).href,
+          scene,
+        );
+        const sys = new GPUParticleSystem(
+          `clouds_${img}`,
+          { capacity: 50000 },
+          scene,
+        );
 
-      // Attach emitter
-      sys.emitter = emitter;
+        // Attach emitter
+        sys.emitter = emitter;
 
-      // Use this cloud texture
-      sys.particleTexture = texture.clone();
+        // Use this cloud texture
+        sys.particleTexture = texture.clone();
 
-      // Color + transparency like fog/smoke demo
-      sys.color1 = new Color4(0.8, 0.8, 0.8, 0.1);
-      sys.color2 = new Color4(0.95, 0.95, 0.95, 0.15);
-      sys.colorDead = new Color4(0.9, 0.9, 0.9, 0.1);
+        // Color + transparency like fog/smoke demo
+        sys.color1 = new Color4(0.8, 0.8, 0.8, 0.1);
+        sys.color2 = new Color4(0.95, 0.95, 0.95, 0.15);
+        sys.colorDead = new Color4(0.9, 0.9, 0.9, 0.1);
 
-      // Cloud size
-      sys.minSize = 25.5;
-      sys.maxSize = 200.0;
+        // Cloud size
+        sys.minSize = 25.5;
+        sys.maxSize = 200.0;
 
-      // Static lifetime
-      sys.minLifeTime = Number.MAX_SAFE_INTEGER;
-      sys.maxLifeTime = Number.MAX_SAFE_INTEGER;
+        // Static lifetime
+        sys.minLifeTime = Number.MAX_SAFE_INTEGER;
+        sys.maxLifeTime = Number.MAX_SAFE_INTEGER;
 
-      // Emit all at once — already distributed
-      sys.manualEmitCount = 200;
-      sys.activeParticleCount = sys.manualEmitCount;
+        // Emit all at once — already distributed
+        sys.manualEmitCount = 200;
+        sys.activeParticleCount = sys.manualEmitCount;
 
-      // Wide sky box distribution
-      sys.minEmitBox = new Vector3(-300, 120, -5300);
-      sys.maxEmitBox = new Vector3(300, 200, 300);
+        // Wide sky box distribution
+        sys.minEmitBox = new Vector3(-300, 120, -5300);
+        sys.maxEmitBox = new Vector3(300, 200, 300);
 
-      // Soft blending
-      sys.blendMode = GPUParticleSystem.BLENDMODE_STANDARD;
-      sys.gravity = Vector3.Zero();
+        // Soft blending
+        sys.blendMode = GPUParticleSystem.BLENDMODE_STANDARD;
+        sys.gravity = Vector3.Zero();
 
-      // Minimal angular rotation and slow drift
-      sys.minAngularSpeed = -0.01;
-      sys.maxAngularSpeed = 0.1;
-      sys.minEmitPower = 0.5;
-      sys.maxEmitPower = 1.0;
+        // Minimal angular rotation and slow drift
+        sys.minAngularSpeed = -0.01;
+        sys.maxAngularSpeed = 0.1;
+        sys.minEmitPower = 0.5;
+        sys.maxEmitPower = 1.0;
 
-      // Almost static speed
-      sys.updateSpeed = 0.005;
+        // Almost static speed
+        sys.updateSpeed = 0.005;
 
-      // Randomize initial direction slightly (almost flat)
-      sys.direction1 = new Vector3(-0.01, 0, -0.01);
-      sys.direction2 = new Vector3(0.01, 0.01, 0.01);
+        // Randomize initial direction slightly (almost flat)
+        sys.direction1 = new Vector3(-0.01, 0, -0.01);
+        sys.direction2 = new Vector3(0.01, 0.01, 0.01);
 
-      // Start immediately
-      sys.start();
-    });
+        // Start immediately
+        sys.start();
+      });
     }
   }
 }
