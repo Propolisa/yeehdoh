@@ -483,7 +483,8 @@ export var createScene = function (engine, canvas) {
     const sun = new DirectionalLight('sun', new Vector3(-1, -2, -1), scene);
     sun.intensity = 1.5
     sun.position = new Vector3(50, 100, 0);
-     const shadowGen = new ShadowGenerator(1024, sun); // lower res = faster & softer
+     const shadowGen = new ShadowGenerator(256, sun); // lower res = faster & softer
+
         shadowGen.useBlurExponentialShadowMap = true; // softer penumbra blur
         shadowGen.blurKernel = 4; // increase for softness
         shadowGen.blurScale = 5.0; // 1 = moderate blur, >1 = more diffuse

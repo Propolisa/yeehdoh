@@ -1,6 +1,17 @@
-import { WINDOW_CONTEXT } from '@/lib/helpers';
-import { Constants, Effect, Mesh, MirrorTexture, Plane, RenderTargetTexture, ShaderMaterial, Vector4, VertexData } from '@babylonjs/core';
-import GUI from 'lil-gui';
+import { WINDOW_CONTEXT } from "@/lib/helpers";
+import {
+    Color4,
+    Constants,
+    Effect,
+    Mesh,
+    MirrorTexture,
+    Plane,
+    RenderTargetTexture,
+    ShaderMaterial,
+    Vector4,
+    VertexData,
+} from "@babylonjs/core";
+import GUI from "lil-gui";
 /**
  * Stylized physically-plausible water surface with Gerstner waves + natural horizon blending.
  */
@@ -15,18 +26,33 @@ export class Water {
         this.level = opts.level ?? 0;
 
         // === Mesh ===
-        this.mesh = this._makeCircularMesh(scene, 'water', this.radius, 64, 64);
+        this.mesh = this._makeCircularTriMesh({
+            scene,
+            name: "water",
+            radius: this.radius,
+            density: 2, // smaller triangles = higher density
+            falloff: 0.2, // 20% outer band gets circular coercion
+        });
         this.mesh.position.y = this.level;
 
         // === Register shaders ===
         this._registerShaders();
 
         // === Depth renderer ===
-        const depthRenderer = scene.enableDepthRenderer(scene.activeCamera, false);
+        const depthRenderer = scene.enableDepthRenderer(
+            scene.activeCamera,
+            false,
+        );
         this.depthTex = depthRenderer.getDepthMap();
 
         // === Refraction RTT ===
-        this.refractionRTT = new RenderTargetTexture('water_refraction', { ratio: 0.75 }, scene, false, true);
+        this.refractionRTT = new RenderTargetTexture(
+            "water_refraction",
+            { ratio: 0.75 },
+            scene,
+            false,
+            true,
+        );
         this.refractionRTT.wrapU = Constants.TEXTURE_MIRROR_ADDRESSMODE;
         this.refractionRTT.wrapV = Constants.TEXTURE_MIRROR_ADDRESSMODE;
 
@@ -35,7 +61,12 @@ export class Water {
         this.refractionRTT.activeCamera = scene.activeCamera;
 
         // === Reflection RTT ===
-        this.reflectionRTT = new MirrorTexture('water_reflection', { ratio: 0.5 }, scene, true);
+        this.reflectionRTT = new MirrorTexture(
+            "water_reflection",
+            { ratio: 0.5 },
+            scene,
+            true,
+        );
 
         this.reflectionRTT.mirrorPlane = new Plane(0, -1, 0, this.level);
         this.reflectionRTT.refreshRate = 1;
@@ -46,59 +77,63 @@ export class Water {
 
         // === Shader material ===
         const shaderMaterial = new ShaderMaterial(
-            'shader',
+            "shader",
             scene,
-            { vertex: 'custom', fragment: 'custom' },
+            { vertex: "custom", fragment: "custom" },
             {
-                attributes: ['position', 'normal', 'uv'],
+                attributes: ["position", "normal", "uv"],
                 uniforms: [
-                    'world',
-                    'worldView',
-                    'worldViewProjection',
-                    'cameraPosition',
+                    "world",
+                    "worldView",
+                    "worldViewProjection",
+                    "cameraPosition",
 
                     // time & camera depth params
-                    'time',
-                    'camMinZ',
-                    'camMaxZ',
-                    'maxDepth',
+                    "time",
+                    "camMinZ",
+                    "camMaxZ",
+                    "maxDepth",
 
                     // water colors
-                    'wFoamColor',
-                    'wDeepColor',
-                    'wShallowColor',
+                    "wFoamColor",
+                    "wDeepColor",
+                    "wShallowColor",
 
                     // screen-space noise helpers
-                    'wNoiseScale',
-                    'wNoiseOffset',
-                    'fNoiseScale',
+                    "wNoiseScale",
+                    "wNoiseOffset",
+                    "fNoiseScale",
 
                     // optics
-                    'iorWater',
-                    'iorAir',
-                    'refrScale',
-                    'reflScale',
+                    "iorWater",
+                    "iorAir",
+                    "refrScale",
+                    "reflScale",
 
                     // gerstner controls
-                    'gravity',
-                    'waterDepth',
-                    'choppiness',
-                    'waveA',
-                    'waveB',
-                    'waveC',
-                    'waveD',
-                    'steepness',
-                    'windDir',
-                    'sceneColor',
-                    'exposure',
-                    'foamStrength',
-                    'foamThreshold',
-                    'foamFalloff',
-                    'foamShallowBoost',
-                    'foamNoiseScale'
+                    "gravity",
+                    "waterDepth",
+                    "choppiness",
+                    "waveA",
+                    "waveB",
+                    "waveC",
+                    "waveD",
+                    "steepness",
+                    "windDir",
+                    "sceneColor",
+                    "exposure",
+                    "foamStrength",
+                    "foamThreshold",
+                    "foamFalloff",
+                    "foamShallowBoost",
+                    "foamNoiseScale",
                 ],
-                samplers: ['depthTex', 'refractionSampler', 'reflectionSampler']
-            }
+                samplers: [
+                    "depthTex",
+                    "refractionSampler",
+                    "reflectionSampler",
+                ],
+            },
         );
         shaderMaterial.backFaceCulling = false;
 
@@ -110,16 +145,19 @@ export class Water {
                 foamFalloff: { value: 1.2, range: [0, 3, 0.01] },
                 foamShallowBoost: { value: 1.0, range: [0, 3, 0.01] },
                 foamNoiseScale: { value: 1.0, range: [0.1, 3, 0.01] },
-                wFoamColor: { value: new Vector4(0.95, 0.97, 1.0, 1.0), color: true }
+                wFoamColor: {
+                    value: new Vector4(0.95, 0.97, 1.0, 1.0),
+                    color: true,
+                },
             },
 
             Waves: {
                 gravity: { value: 9.81, range: [0, 30, 0.01] },
                 waterDepth: { value: 20.0, range: [0, 100, 0.1] },
-                choppiness: { value: 1.1, range: [0, 3, 0.01] },
+                choppiness: { value: .2, range: [0, 3, 0.01] },
                 waveAmpScale: { value: 1.0, range: [0, 3, 0.01] },
                 waveLengthScale: { value: 1.0, range: [0, 3, 0.01] },
-                waveSpeed: { value: 1.0, range: [0, 3, 0.01] }
+                waveSpeed: { value: 1.0, range: [0, 3, 0.01] },
             },
 
             Optics: {
@@ -127,34 +165,46 @@ export class Water {
                 iorAir: { value: 1.0, range: [0.5, 2, 0.001] },
                 refrScale: { value: 0.18, range: [0, 1, 0.01] },
                 reflScale: { value: 0.0, range: [0, 1, 0.01] },
-                maxDepth: { value: 5.0, range: [0, 50, 0.1] }
+                maxDepth: { value: 5.0, range: [0, 50, 0.1] },
             },
 
             Colors: {
-                wDeepColor: { value: new Vector4(0.02, 0.25, 0.4, 1.0), color: true },
-                wShallowColor: { value: new Vector4(0.03, 0.55, 0.7, 1.0), color: true }
+                wDeepColor: {
+                    value: new Vector4(0.02, 0.25, 0.4, 1.0),
+                    color: true,
+                },
+                wShallowColor: {
+                    value: new Vector4(0.03, 0.55, 0.7, 1.0),
+                    color: true,
+                },
+                sceneColor: {
+                    value: new Vector4(
+                        ...(Color4.FromHexString("#3b9dce").asArray()),
+                    ),
+                    color: true,
+                },
             },
 
             Noise: {
-                wNoiseScale: { value: 0.18, range: [0, 1, 0.001] },
+                wNoiseScale: { value: 0.68, range: [0, 1, 0.001] },
                 wNoiseOffset: { value: 0.015, range: [0, 0.1, 0.001] },
-                fNoiseScale: { value: 1.8, range: [0, 5, 0.01] }
-            }
+                fNoiseScale: { value: 1.8, range: [0, 5, 0.01] },
+            },
         };
 
         // === Continuous uniform sync ===
         scene.onBeforeRenderObservable.add(() => {
             for (const [, group] of Object.entries(u)) {
                 for (const [key, def] of Object.entries(group)) {
-                    if (!def.color && typeof def.value === 'number') {
+                    if (!def.color && typeof def.value === "number") {
                         shaderMaterial.setFloat(key, def.value);
                     }
                 }
             }
         });
 
-        shaderMaterial.setFloat('camMinZ', scene.activeCamera.minZ);
-        shaderMaterial.setFloat('camMaxZ', scene.activeCamera.maxZ);
+        shaderMaterial.setFloat("camMinZ", scene.activeCamera.minZ);
+        shaderMaterial.setFloat("camMaxZ", scene.activeCamera.maxZ);
         // === GUI reuse / setup (HMR safe) ===
         let gui;
 
@@ -163,16 +213,18 @@ export class Water {
             if (window.__GLOBAL_LIL_GUI__) {
                 gui = window.__GLOBAL_LIL_GUI__;
             } else {
-                gui = new GUI({ title: 'Procedural Controls', width: 360 });
+                gui = new GUI({ title: "Procedural Controls", width: 360 });
                 window.__GLOBAL_LIL_GUI__ = gui;
             }
 
             // --- Remove any existing “Water Shader” folder ---
-            const existing = gui.folders?.find?.((f) => f._title === '🌊 Water Shader' || f._title === 'Water Shader');
+            const existing = gui.folders?.find?.((f) =>
+                f._title === "🌊 Water Shader" || f._title === "Water Shader"
+            );
             if (existing) existing.destroy();
 
             // --- Create fresh folder ---
-            const folder = gui.addFolder('🌊 Water Shader');
+            const folder = gui.addFolder("🌊 Water Shader");
             this._guiFolder = folder;
 
             // helper for color uniforms
@@ -188,19 +240,31 @@ export class Water {
                         // color controllers
                         setColorUniform(shaderMaterial, key, val);
                         const picker = { color: [val.x, val.y, val.z] };
-                        sub.addColor(picker, 'color')
+                        sub.addColor(picker, "color")
                             .name(key)
                             .onChange((rgb) => {
                                 const [r, g, b] = rgb;
-                                setColorUniform(shaderMaterial, key, new Vector4(r, g, b, 1.0));
+                                setColorUniform(
+                                    shaderMaterial,
+                                    key,
+                                    new Vector4(r, g, b, 1.0),
+                                );
                             });
                     } else {
                         // numeric controllers
                         shaderMaterial.setFloat(key, val);
                         if (def.range) {
-                            sub.add(def, 'value', def.range[0], def.range[1], def.range[2])
+                            sub.add(
+                                def,
+                                "value",
+                                def.range[0],
+                                def.range[1],
+                                def.range[2],
+                            )
                                 .name(key)
-                                .onChange((v) => shaderMaterial.setFloat(key, v));
+                                .onChange((v) =>
+                                    shaderMaterial.setFloat(key, v)
+                                );
                         }
                     }
                 }
@@ -227,38 +291,52 @@ export class Water {
                     // --- COLOR UNIFORMS ---
                     setColorUniform(shaderMaterial, key, val);
                     const picker = { color: [val.x, val.y, val.z] };
-                    if (folder)
+                    if (folder) {
                         folder
-                            .addColor(picker, 'color')
+                            .addColor(picker, "color")
                             .name(key)
                             .onChange((rgb) => {
                                 const [r, g, b] = rgb;
-                                setColorUniform(shaderMaterial, key, new Vector4(r, g, b, 1.0));
+                                setColorUniform(
+                                    shaderMaterial,
+                                    key,
+                                    new Vector4(r, g, b, 1.0),
+                                );
                             });
+                    }
                 } else {
                     // --- FLOAT UNIFORMS ---
                     shaderMaterial.setFloat(key, val);
                     if (def.range) {
-                        if (folder)
+                        if (folder) {
                             folder
-                                .add(def, 'value', def.range[0], def.range[1], def.range[2])
+                                .add(
+                                    def,
+                                    "value",
+                                    def.range[0],
+                                    def.range[1],
+                                    def.range[2],
+                                )
                                 .name(key)
-                                .onChange((v) => shaderMaterial.setFloat(key, v));
+                                .onChange((v) =>
+                                    shaderMaterial.setFloat(key, v)
+                                );
+                        }
                     }
                 }
             }
         }
 
         // === Textures ===
-        shaderMaterial.setTexture('depthTex', this.depthTex);
-        shaderMaterial.setTexture('refractionSampler', this.refractionRTT);
-        shaderMaterial.setTexture('reflectionSampler', this.reflectionRTT);
+        shaderMaterial.setTexture("depthTex", this.depthTex);
+        shaderMaterial.setTexture("refractionSampler", this.refractionRTT);
+        shaderMaterial.setTexture("reflectionSampler", this.reflectionRTT);
 
         // === Waves A–D definitions ===
-        shaderMaterial.setVector4('waveA', new Vector4(1.0, 0.3, 0.0, 12.0)); // swell
-        shaderMaterial.setVector4('waveB', new Vector4(-0.7, 1.0, 0.0, 7.0)); // swell 2
-        shaderMaterial.setVector4('waveC', new Vector4(0.3, -1.0, 0.0, 3.0)); // chop
-        shaderMaterial.setVector4('waveD', new Vector4(-1.0, -0.4, 0.0, 1.5)); // chop
+        shaderMaterial.setVector4("waveA", new Vector4(1.0, 0.3, 0.0, 12.0)); // swell
+        shaderMaterial.setVector4("waveB", new Vector4(-0.7, 1.0, 0.0, 7.0)); // swell 2
+        shaderMaterial.setVector4("waveC", new Vector4(0.3, -1.0, 0.0, 3.0)); // chop
+        shaderMaterial.setVector4("waveD", new Vector4(-1.0, -0.4, 0.0, 1.5)); // chop
 
         shaderMaterial.alpha = 1;
 
@@ -267,9 +345,12 @@ export class Water {
 
         // === Keep time and camera in sync ===
         this._renderObserver = scene.onBeforeRenderObservable.add(() => {
-            shaderMaterial.setFloat('time', performance.now() * 0.0009);
+            shaderMaterial.setFloat("time", performance.now() * 0.0009);
 
-            shaderMaterial.setVector3('cameraPosition', scene.activeCamera.position);
+            shaderMaterial.setVector3(
+                "cameraPosition",
+                scene.activeCamera.position,
+            );
             this.refractionRTT.activeCamera = scene.activeCamera;
         });
 
@@ -278,13 +359,13 @@ export class Water {
         engine.onResizeObservable.add(() => {
             const { reflectionRTT, refractionRTT, material, scene } = this;
 
-            refractionRTT.resize({ ratio: 0.75 });
-            reflectionRTT.resize({ ratio: 0.5 });
+            refractionRTT.resize({ ratio: 0.1 });
+            reflectionRTT.resize({ ratio: 0.1 });
         });
 
         // === Link island ===
         const linkIsland = (m) => {
-            if (m && m.name === 'island') {
+            if (m && m.name === "island") {
                 const list = [m];
                 this.refractionRTT.renderList = list;
                 this.reflectionRTT.renderList = list;
@@ -296,76 +377,115 @@ export class Water {
 
         // === Maintain reflection lists ===
         const updateRenderLists = () => {
-            const list = scene.meshes.filter((m) => m !== this.mesh && m.isVisible && m.isEnabled());
+            const list = scene.meshes.filter((m) =>
+                m !== this.mesh && m.isVisible && m.isEnabled()
+            );
 
             this.reflectionRTT.renderList = list;
             this.refractionRTT.renderList = list;
         };
         updateRenderLists();
-        this._meshAddedObserver = scene.onNewMeshAddedObservable.add(updateRenderLists);
-        this._meshRemovedObserver = scene.onMeshRemovedObservable?.add?.(updateRenderLists);
+        this._meshAddedObserver = scene.onNewMeshAddedObservable.add(
+            updateRenderLists,
+        );
+        this._meshRemovedObserver = scene.onMeshRemovedObservable?.add?.(
+            updateRenderLists,
+        );
     }
 
     /** Circular water surface (double-sided), same topology approach */
-    _makeCircularMesh(scene, name, radius = 128, radialSegments = 10, ringSegments = 10, edgeDepth = 2000) {
+    _makeCircularTriMesh({
+        scene,
+        name = "triSurface",
+        radius = 128,
+        density = 1.0, // 1.0 = triangles of size ~radius/40 (adjustable)
+        falloff = 0.15, // % of radius where circular coercion starts
+    }) {
         const positions = [];
-        const indices = [];
         const uvs = [];
+        const indices = [];
 
-        // --- main circular surface ---
-        for (let i = 0; i <= ringSegments; i++) {
-            const t = i / ringSegments;
-            const r = radius * Math.pow(t, 2.2);
-            for (let j = 0; j <= radialSegments; j++) {
-                const theta = (j / radialSegments) * Math.PI * 2;
-                const x = r * Math.cos(theta);
-                const z = r * Math.sin(theta);
-                positions.push(x, 0, z);
-                uvs.push(j / radialSegments, i / ringSegments);
+        const R = radius;
+        const triSize = R / (40 * density); // density → triangle edge size
+        const u = [triSize, 0];
+        const v = [triSize * 0.5, triSize * Math.sqrt(3) * 0.5];
+
+        const maxExtent = R * 1.1;
+        const fall = falloff * R;
+
+        // Storage for vertex indices
+        const grid = new Map();
+        const key = (i, j) => `${i},${j}`;
+
+        let vertCount = 0;
+
+        // --- Generate grid vertices -------------------------------------------
+        // Choose range based on approximate bounding box large enough for circle
+        const N = Math.ceil(maxExtent / triSize) + 3;
+
+        for (let i = -N; i <= N; i++) {
+            for (let j = -N; j <= N; j++) {
+                // Triangular-lattice coordinate → 2D point
+                const x = i * u[0] + j * v[0];
+                const z = i * u[1] + j * v[1];
+                const r = Math.sqrt(x * x + z * z);
+
+                if (r > maxExtent) continue;
+
+                // --- circular coercion near boundary ---
+                if (r > R - fall) {
+                    const t = (r - (R - fall)) / fall;
+                    const w = t * t * t * (t * (t * 6 - 15) + 10); // smootherstep
+                    const nx = x / r;
+                    const nz = z / r;
+                    const rx = (1 - w) * x + w * nx * R;
+                    const rz = (1 - w) * z + w * nz * R;
+                    positions.push(rx, 0, rz);
+                } else {
+                    positions.push(x, 0, z);
+                }
+
+                // Simple UV mapping (radial)
+                uvs.push((x / R) * 0.5 + 0.5, (z / R) * 0.5 + 0.5);
+
+                grid.set(key(i, j), vertCount++);
             }
         }
 
-        const stride = radialSegments + 1;
-        for (let i = 0; i < ringSegments; i++) {
-            for (let j = 0; j < radialSegments; j++) {
-                const a = i * stride + j;
-                const b = a + 1;
-                const c = a + stride;
-                const d = c + 1;
-                indices.push(a, b, c, b, d, c);
+        // --- Generate triangle indices ------------------------------------------
+        const tryAdd = (a, b, c) => {
+            if (a !== undefined && b !== undefined && c !== undefined) {
+                indices.push(a, b, c);
+            }
+        };
+
+        for (let i = -N; i <= N; i++) {
+            for (let j = -N; j <= N; j++) {
+                const a = grid.get(key(i, j));
+                if (a === undefined) continue;
+
+                // The six surrounding triangles in a triangular lattice
+                const b = grid.get(key(i + 1, j));
+                const c = grid.get(key(i, j + 1));
+                const d = grid.get(key(i - 1, j + 1));
+
+                tryAdd(a, b, c);
+                tryAdd(a, c, d);
             }
         }
 
-        // --- extrude the outer ring downward ---
-        const baseRingStart = ringSegments * stride;
-        for (let j = 0; j <= radialSegments; j++) {
-            const idx = baseRingStart + j;
-            const x = positions[idx * 3 + 0];
-            const z = positions[idx * 3 + 2];
-            positions.push(x, -edgeDepth, z);
-            uvs.push(j / radialSegments, 1.1); // push UV slightly beyond 1 for gradient safety
-        }
-
-        const newRingStart = positions.length / 3 - (radialSegments + 1);
-        for (let j = 0; j < radialSegments; j++) {
-            const topA = baseRingStart + j;
-            const topB = baseRingStart + j + 1;
-            const botA = newRingStart + j;
-            const botB = newRingStart + j + 1;
-            indices.push(topA, topB, botA, topB, botB, botA);
-        }
-
-        // --- reverse winding to match reflection ---
-        indices.reverse();
-
+        // --- Build Babylon mesh --------------------------------------------------
         const mesh = new Mesh(name, scene);
         const vd = new VertexData();
+
         vd.positions = positions;
         vd.indices = indices;
         vd.uvs = uvs;
+
         const normals = [];
         VertexData.ComputeNormals(positions, indices, normals);
         vd.normals = normals;
+
         vd.applyToMesh(mesh);
         return mesh;
     }
@@ -373,7 +493,7 @@ export class Water {
     /** Vertex + fragment shaders */
     _registerShaders() {
         // === Vertex shader unchanged (Gerstner) ===
-        Effect.ShadersStore['customVertexShader'] = `precision highp float;
+        Effect.ShadersStore["customVertexShader"] = `precision highp float;
 precision highp float;
 
 attribute vec3 position;
@@ -531,7 +651,7 @@ void main(){
 
 `;
 
-        Effect.ShadersStore['customFragmentShader'] = `
+        Effect.ShadersStore["customFragmentShader"] = `
 precision highp float;
 
 varying vec3 vPositionW;
@@ -570,30 +690,42 @@ uniform float foamFalloff;
 uniform float foamShallowBoost;
 uniform float foamNoiseScale;
 
-
-// --- helpers ---------------------------------------------------
-float noise(vec3 p){
-  vec3 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
-  float n=dot(i, vec3(1.0,57.0,113.0));
-  float n000=fract(sin(n+0.0)*43758.5453);
-  float n100=fract(sin(n+1.0)*43758.5453);
-  float n010=fract(sin(n+57.0)*43758.5453);
-  float n110=fract(sin(n+58.0)*43758.5453);
-  float n001=fract(sin(n+113.0)*43758.5453);
-  float n101=fract(sin(n+114.0)*43758.5453);
-  float n011=fract(sin(n+170.0)*43758.5453);
-  float n111=fract(sin(n+171.0)*43758.5453);
-  float nx00=mix(n000,n100,f.x);
-  float nx10=mix(n010,n110,f.x);
-  float nx01=mix(n001,n101,f.x);
-  float nx11=mix(n011,n111,f.x);
-  float nxy0=mix(nx00,nx10,f.y);
-  float nxy1=mix(nx01,nx11,f.y);
-  return mix(nxy0,nxy1,f.z);
+float hash13(vec3 p) {
+    p = fract(p * 0.1031);
+    p += dot(p, p.yzx + 33.33);
+    return fract((p.x + p.y) * p.z);
 }
 
-// Reuse the SAME noise() function already declared above.
-// Build a small fbm from that for a more pleasant basis.
+
+// --- helpers ---------------------------------------------------
+float noise(vec3 p) {
+    vec3 i = floor(p);
+    vec3 f = fract(p);
+    f = f*f*(3.0 - 2.0*f); // smoothstep
+
+    float n = dot(i, vec3(1.0, 57.0, 113.0));
+
+    float a = hash13(i);
+    float b = hash13(i + vec3(1,0,0));
+    float c = hash13(i + vec3(0,1,0));
+    float d = hash13(i + vec3(1,1,0));
+    float e = hash13(i + vec3(0,0,1));
+    float f1= hash13(i + vec3(1,0,1));
+    float g = hash13(i + vec3(0,1,1));
+    float h = hash13(i + vec3(1,1,1));
+
+    float nx00 = mix(a, b, f.x);
+    float nx10 = mix(c, d, f.x);
+    float nx01 = mix(e, f1, f.x);
+    float nx11 = mix(g, h, f.x);
+
+    float nxy0 = mix(nx00, nx10, f.y);
+    float nxy1 = mix(nx01, nx11, f.y);
+
+    return mix(nxy0, nxy1, f.z);
+}
+
+
 float fbm(vec3 p){
   float a = 0.5;
   float s = 0.0;
@@ -603,12 +735,10 @@ float fbm(vec3 p){
   return s;
 }
 
-
 float fresnelSchlick(float cosTheta, float F0){
   return F0 + (1.0 - F0)*pow(1.0 - cosTheta, 5.0);
 }
 
-// Henyey–Greenstein-ish forward phase (g≈0.6)
 float phaseHG(float mu){
   float g = 0.6;
   float gg = g*g;
@@ -616,39 +746,56 @@ float phaseHG(float mu){
 }
 
 void main(void){
-  // Screen coords + ripple (use 2D distortion; this is important)
-vec2 ndc = (vClipSpace.xy / vClipSpace.w) / 2.0 + 0.5;
-float ripple = noise(vec3(vPositionW.xz * wNoiseScale * 1.8, time*1.3)) * wNoiseOffset;
-// Terrain depth behind water
-float depthBehind = texture2D(depthTex, ndc + ripple).r;
-float surfaceDepth = (vClipSpace.z + camMinZ) / (camMaxZ + camMinZ);
-float depthDelta = max(0.0, depthBehind - surfaceDepth);
 
-// Convert to approximate meters in camera space
-// Here camMaxZ is camera far plane, often 100–1000 → scale accordingly.
-float waterDepthMeters = depthDelta * camMaxZ; 
+  vec2 ndc = (vClipSpace.xy / vClipSpace.w) / 2.0 + 0.5;
 
-// --- Physical attenuation ---
-// 50m falloff: by 50m the refraction fully disappears
-float depthVisibility = exp(-waterDepthMeters / 50.0);
+  // ORIGINAL ripple computation (will be replaced after minimal fade)
+  vec2 p = vPositionW.xz * wNoiseScale;
+// === DOMAIN WARPED FLOW NOISE ===
 
 
-  // Normalize to 0..1 range using your artistic 'maxDepth' in meters
-  // (the original scaled by camMaxZ before dividing; we mimic that)
+
+// Time-warped animation to avoid periodic snapping
+vec3 timeWarp = vec3(
+    cos(time * 0.15) * 3.0,
+    sin(time * 0.21) * 3.0,
+    sin(time * 0.13) * 3.0
+);
+
+// Primary domain warp
+vec2 warp1 = vec2(
+    noise(vec3(p * 0.75, 0.0) + timeWarp),
+    noise(vec3(p * 0.85 + 11.5, 0.0) + timeWarp)
+);
+
+// Secondary domain warp (nested) for extra fluidity
+vec2 warp2 = vec2(
+    noise(vec3((p + warp1 * 0.4) * 1.1, 0.0) + timeWarp * 0.5),
+    noise(vec3((p + warp1 * 0.4) * 1.3 + 17.7, 0.0) + timeWarp * 0.5)
+);
+
+// Apply warp
+p += warp1 * 0.35 + warp2 * 0.25;
+
+// Final noise sample
+float ripple = noise(vec3(p * 1.0, 0.0) + timeWarp) * wNoiseOffset;
+
+
+
+
+  float depthBehind = texture2D(depthTex, ndc + ripple).r;
+  float surfaceDepth = (vClipSpace.z + camMinZ) / (camMaxZ + camMinZ);
+  float depthDelta = max(0.0, depthBehind - surfaceDepth);
+  float waterDepthMeters = depthDelta * camMaxZ;
+  float depthVisibility = exp(-waterDepthMeters / 50.0);
   float wdepth = clamp((camMaxZ * depthDelta) / maxDepth, 0.0, 1.0);
 
-  // *** BUGFIX #1: Work consistently in WORLD space ***
   vec3 N  = normalize(vNormalW);
-  
-  vec3 Vw = normalize(cameraPosition - vPositionW); // view dir (toward camera) in world space
+  vec3 Vw = normalize(cameraPosition - vPositionW);
+  if ((cameraPosition.y + 0.02) < vPositionW.y) Vw = -Vw;
 
-  
-if ((cameraPosition.y + 0.02) < vPositionW.y) Vw = -Vw; // flip when under water
-
-  // Robust "are we underwater?" test (don’t rely on gl_FrontFacing)
   bool isUnder = !gl_FrontFacing;
 
-  // IOR & Fresnel
   float n1 = isUnder ? iorWater : iorAir;
   float n2 = isUnder ? iorAir   : iorWater;
   float eta = n1 / n2;
@@ -656,32 +803,60 @@ if ((cameraPosition.y + 0.02) < vPositionW.y) Vw = -Vw; // flip when under water
   float F0 = pow((n1 - n2) / (n1 + n2), 2.0);
   float Fr = fresnelSchlick(cosI, F0);
 
-  // Reflect / Refract in WORLD space against WORLD normal
   vec3 T = refract(-Vw, N, eta);
   vec3 R = reflect(-Vw,  N);
-
   bool TIR = all(lessThan(abs(T), vec3(1e-6)));
   if (TIR) Fr = 1.0;
 
   float eyeZ = max(1.0, -vPosVS.z);
-float refrMult = isUnder ? refrScale : 0.0;
+  float refrMult = isUnder ? refrScale : 0.0;
 
-vec2 refrUV = ndc + (refrMult * T.xy) / eyeZ + ripple * 0.4;
-vec2 reflUV = ndc + (reflScale * R.xy) / eyeZ - ripple * 0.4;
+  // ============================
+  //  MINIMAL HORIZON FADE INSERT
+  // ============================
 
-vec3 refrColor = texture2D(refractionSampler, refrUV).rgb;
-vec3 reflColor = texture2D(reflectionSampler, reflUV).rgb;
+  // World-space distance from camera to water fragment
+// === Angle-based horizon flattening ===
+// View angle: 1.0 when grazing (edge of water), 0.0 when looking down
+float horizonFade = 1.0 - abs(dot(Vw, N));
+ horizonFade = smoothstep(0.3, 0.95, horizonFade) * 0.4;
 
-  // Sky model / env color
+
+  // Reduce ripple near horizon
+  float rippleFade = (1.0 - 0.7 * horizonFade);
+
+  // Replace ORIGINAL ripple only here:
+  ripple = fbm(vec3(vPositionW.xz * wNoiseScale * 1.3, time * 0.7)) 
+           * wNoiseOffset * rippleFade;
+
+  // ============================
+  //  END OF MINIMAL ADDITION
+  // ============================
+
+
+  vec2 refrUV = ndc + (refrMult * T.xy) / eyeZ + ripple * 0.4;
+  vec2 reflUV = ndc + (reflScale * R.xy) / eyeZ - ripple * 0.4;
+
+  vec3 refrColor = texture2D(refractionSampler, refrUV).rgb;
+  vec3 reflColor = texture2D(reflectionSampler, reflUV).rgb;
+
+  float reflectFade = mix(1.0, 0.35, horizonFade);   // reduce reflection intensity
+float refractFade = mix(1.0, 0.55, horizonFade);   // reduce refractive contrast
+
+reflColor = mix(reflColor, sceneColor.rgb, horizonFade * 0.6);
+refrColor = mix(refrColor, sceneColor.rgb, horizonFade * 0.4);
+
+reflColor *= reflectFade;
+refrColor *= refractFade;
+
   vec3 env = sceneColor.rgb * exposure;
 
-  // *** BUGFIX #3: If env is too desaturated or too dark, fall back to a blue sky ***
   float envLum = max(0.0001, dot(env, vec3(0.2126,0.7152,0.0722)));
   vec3 envNorm = env / envLum;
   float envMax = max(max(envNorm.r, envNorm.g), envNorm.b);
   float envMin = min(min(envNorm.r, envNorm.g), envNorm.b);
   float envSat = (envMax - envMin) / max(envMax, 1e-3);
-  vec3 fallbackSky = vec3(0.18, 0.36, 0.85); // pleasant sky blue
+  vec3 fallbackSky = vec3(0.18, 0.36, 0.85);
   vec3 envSafe = mix(fallbackSky, env, clamp(envSat * envLum * 3.0, 0.0, 1.0));
 
   vec3 skyZenith  = envSafe * 0.85;
@@ -692,157 +867,118 @@ vec3 reflColor = texture2D(reflectionSampler, reflUV).rgb;
   horizonBlend = mix(0.35, 0.65, horizonBlend);
   vec3 skyColor = mix(skyZenith, skyHorizon, horizonBlend);
 
-// === Stylized overlapping foam outlines ===
-vec2 advect = vFoamFlow * time * 1.5;
 
-// Base influence: shallow + crest
-float shallowFoam = smoothstep(foamThreshold * 0.5, foamThreshold + 0.25, 1.0 - wdepth);
-float crestFoam   = pow(vCrest, 1.2 + foamFalloff * 0.5);
-float foamCombined = mix(shallowFoam, crestFoam, 0.6);
+  // === foam math ===
+  vec2 advect = vFoamFlow * time * 1.5;
+  float shallowFoam = smoothstep(foamThreshold * 0.5, foamThreshold + 0.25, 1.0 - wdepth);
+  float crestFoam   = pow(vCrest, 1.2 + foamFalloff * 0.5);
+  float foamCombined = mix(shallowFoam, crestFoam, 0.6);
+  float t = foamCombined * 6.28318 * foamNoiseScale;
+  float band1 = 0.5 + 0.5 * sin(t + time * 0.1);
+  float band2 = 0.5 + 0.5 * sin(t * 1.7 + time * 0.07);
+  float band3 = 0.5 + 0.5 * sin(t * 2.4 - time * 0.05);
+  float bands = (band1 * 0.5 + band2 * 0.35 + band3 * 0.25);
+  bands = pow(bands, 1.5 / (foamFalloff + 0.5));
+  float shallowBoost = 1.0 + foamShallowBoost * (1.0 - wdepth);
+  float foamMask = clamp(bands * foamCombined * foamStrength * shallowBoost, 0.0, 1.0);
 
-// Derive a continuous “ring coordinate” from foamCombined.
-// We use several offset sine layers to create overlapping translucent bands.
-float t = foamCombined * 6.28318 * foamNoiseScale;   // scale to radians
-float band1 = 0.5 + 0.5 * sin(t + time * 0.1);
-float band2 = 0.5 + 0.5 * sin(t * 1.7 + time * 0.07);
-float band3 = 0.5 + 0.5 * sin(t * 2.4 - time * 0.05);
-
-// Combine layers with gentle weighting to make overlapping rings
-float bands = (band1 * 0.5 + band2 * 0.35 + band3 * 0.25);
-
-// Emphasize mid-tone regions (where bands overlap) using falloff as contrast
-bands = pow(bands, 1.5 / (foamFalloff + 0.5));
-
-// Boost shallow areas if desired
-float shallowBoost = 1.0 + foamShallowBoost * (1.0 - wdepth);
-
-// Final mask
-float foamMask = clamp(bands * foamCombined * foamStrength * shallowBoost, 0.0, 1.0);
+  // MINIMALLY fade foam near horizon
+  foamMask *= (1.0 - 0.8 * horizonFade);
 
 
+  // =========================
+  // ABOVE WATER
+  // =========================
+  if (!isUnder) {
+      vec3 deepCol = mix(wDeepColor.rgb, wShallowColor.rgb, 0.3);
+      float roughness = 0.15;
+      Fr *= mix(1.0, 0.75, roughness);
+
+      vec3 absorbA = vec3(0.08, 0.045, 0.02);
+      vec3 trans   = exp(-absorbA * (4.0 * clamp(wdepth + 0.15, 0.0, 1.0)));
+
+      vec3 refrCol = texture2D(refractionSampler, refrUV).rgb;
+      vec3 reflCol = texture2D(reflectionSampler,  reflUV).rgb;
+
+      refrCol *= trans;
+      refrCol = mix(refrCol, deepCol, 0.3);
+      refrCol = mix(refrCol, deepCol, 1.0 - depthVisibility);
+
+      vec3 color = mix(refrCol, reflCol, Fr);
+      color = mix(color, wFoamColor.rgb, foamMask * 0.6);
+    // === FINAL horizon flattening (this was missing) ===
+    float flatten = horizonFade;               // 0 = no change, 1 = flat horizon
+    vec3 horizonColor = sceneColor.rgb;              // or wDeepColor.rgb if preferred
+    color = mix(color, horizonColor, flatten); // <-- THIS was missing
+      gl_FragColor = vec4(color, 1.0);
+      return;
+  }
 
 
+  // =========================
+  // UNDER WATER
+  // =========================
 
+  float d = distance(cameraPosition, vPositionW);
 
-// =========================
-//       ABOVE WATER
-// =========================
-if (!isUnder) {
-    vec3 deepCol = mix(wDeepColor.rgb, wShallowColor.rgb, 0.3);
-    float roughness = 0.15;
-    Fr *= mix(1.0, 0.75, roughness);
+  vec3 sigma_a = vec3(0.06, 0.035, 0.015);
+  vec3 sigma_s = vec3(0.015, 0.025, 0.040);
+  vec3 sigma_t = sigma_a + sigma_s;
 
-    // attenuation through the water column (tint refraction)
-    vec3 absorbA = vec3(0.08, 0.045, 0.02);
-    vec3 trans   = exp(-absorbA * (4.0 * clamp(wdepth + 0.15, 0.0, 1.0)));
+  float attenuation = clamp(exp(-0.25 * d), 0.35, 1.0);
 
-    // sample refraction & reflection with the NEW UVs
-    vec3 refrCol = texture2D(refractionSampler, refrUV).rgb;
-    vec3 reflCol = texture2D(reflectionSampler,  reflUV).rgb;
+  float mu = clamp(dot(Vw, up), 0.0, 1.0);
+  float snellWindow = smoothstep(0.30, 0.96, mu);
 
-    // tint refraction and blend a bit towards deep tone for body color
-    refrCol *= trans;
-    refrCol = mix(refrCol, deepCol, 0.3);
+  refrUV = ndc + refrScale * (-T.xy) + ripple * 0.8;
+  refrColor = texture2D(refractionSampler, refrUV).rgb;
+  reflColor = texture2D(reflectionSampler, ndc).rgb;
 
- // fade refraction with exponential depth falloff
+  vec3 skyTint = mix(refrColor, reflColor, 0.4);
 
+  vec3 L_window = skyTint * (1.3 + 0.7 * snellWindow);
+  float phase = phaseHG(mu);
+  vec3 waterHue = normalize(vec3(0.05, 0.25, 0.55) + wShallowColor.rgb * 0.3);
+  vec3 L_scatter = waterHue * phase * 0.8 * (1.0 - attenuation);
+  vec3 L_surface = reflColor * (Fr * 0.3) * snellWindow;
 
-refrCol = mix(refrCol, deepCol, 1.0 - depthVisibility);
+  vec3 color = L_window * attenuation + L_scatter + L_surface;
+  float windowLift = smoothstep(0.6, 1.0, mu);
+  color += vec3(0.25, 0.3, 0.35) * windowLift;
 
-// Fresnel mix
-vec3 color = mix(refrCol, reflCol, Fr);
+  float farHaze = clamp(d / (camMaxZ * 0.6), 0.0, 1.0);
+  vec3 hazeTint = waterHue * 0.25;
+  color = mix(color, hazeTint, farHaze * 0.35);
 
-    // foam overlay (unchanged)
-    // vec2 wind = normalize(windDir.xy + 1e-4);
-    // vec2 advect = wind * time * 0.03;
-    // float foamNoise = noise(vec3((vPositionW.xz + advect) * fNoiseScale, time * 0.5));
-    // float shallowFoam = 1.0 - smoothstep(0.15, 0.8, wdepth);
-    // float crestFoam   = smoothstep(0.4, 0.9, vCrest);
-    // float foamMask    = clamp(foamNoise * (0.4 * shallowFoam + 0.8 * crestFoam), 0.0, 1.0);
-    color = mix(color, wFoamColor.rgb, foamMask * 0.6);
+  color = pow(color, vec3(0.9));
 
-    gl_FragColor = vec4(color, 1.0);
-    return;
+  gl_FragColor = vec4(clamp(color, 0.0, 1.0), 0.9);
 }
 
-// =========================
-//       UNDER WATER
-// =========================
-
-// =========================
-//       UNDER WATER
-// =========================
-
-// Physical model: air-light through Snell's window + single scattering + extinction.
-float d = distance(cameraPosition, vPositionW);
-
-// --- Improved Snell’s window brightness model ---
-
-// Spectral coefficients (tuned for clearer, brighter near-surface light)
-vec3 sigma_a = vec3(0.06, 0.035, 0.015);  // absorption (reds fade faster)
-vec3 sigma_s = vec3(0.015, 0.025, 0.040); // scattering (more blue scatter)
-vec3 sigma_t = sigma_a + sigma_s;
-
-// Softer attenuation curve to prevent overly dark appearance
-float attenuation = clamp(exp(-0.25 * d), 0.35, 1.0);
-
-// Compute Snell’s window angle weight
-float mu = clamp(dot(Vw, up), 0.0, 1.0);
-float snellWindow = smoothstep(0.30, 0.96, mu);
-
-// Approximate refraction mix underwater
- refrUV = ndc + refrScale * (-T.xy) + ripple * 0.8;
- refrColor = texture2D(refractionSampler, refrUV).rgb;
- reflColor = texture2D(reflectionSampler, ndc).rgb;
-vec3 skyTint = mix(refrColor, reflColor, 0.4);
-
-// Brighten inside Snell’s cone for realistic luminous window
-vec3 L_window = skyTint * (1.3 + 0.7 * snellWindow);
-
-// Single forward scattering contribution
-float phase = phaseHG(mu);
-vec3 waterHue = normalize(vec3(0.05, 0.25, 0.55) + wShallowColor.rgb * 0.3);
-vec3 L_scatter = waterHue * phase * 0.8 * (1.0 - attenuation);
-
-// Subtle Fresnel reflection from below (rim highlight)
-vec3 L_surface = reflColor * (Fr * 0.3) * snellWindow;
-
-// Combine all contributions
-vec3 color = L_window * attenuation + L_scatter + L_surface;
-
-// Extra boost at the center of Snell’s window (direct skylight through surface)
-float windowLift = smoothstep(0.6, 1.0, mu);
-color += vec3(0.25, 0.3, 0.35) * windowLift;
-
-// Add mild distance haze for depth perception
-float farHaze = clamp(d / (camMaxZ * 0.6), 0.0, 1.0);
-vec3 hazeTint = waterHue * 0.25;
-color = mix(color, hazeTint, farHaze * 0.35);
-
-// Gentle gamma lift for perceptual brightness
-color = pow(color, vec3(0.9));
-
-// Final output
-gl_FragColor = vec4(clamp(color, 0.0, 1.0), 0.9);
-
-
-
-
-}
 `;
     }
 
     /** Dispose */
     dispose() {
         const { scene } = this;
-        if (this._renderObserver) scene.onBeforeRenderObservable.remove(this._renderObserver);
-        if (this._newMeshObserver) scene.onNewMeshAddedObservable.remove(this._newMeshObserver);
+        if (this._renderObserver) {
+            scene.onBeforeRenderObservable.remove(this._renderObserver);
+        }
+        if (this._newMeshObserver) {
+            scene.onNewMeshAddedObservable.remove(this._newMeshObserver);
+        }
         if (this.reflectionRTT) {
-            scene.customRenderTargets.splice(scene.customRenderTargets.indexOf(this.reflectionRTT), 1);
+            scene.customRenderTargets.splice(
+                scene.customRenderTargets.indexOf(this.reflectionRTT),
+                1,
+            );
             this.reflectionRTT.dispose();
         }
         if (this.refractionRTT) {
-            scene.customRenderTargets.splice(scene.customRenderTargets.indexOf(this.refractionRTT), 1);
+            scene.customRenderTargets.splice(
+                scene.customRenderTargets.indexOf(this.refractionRTT),
+                1,
+            );
             this.refractionRTT.dispose();
         }
         this.material?.dispose();
