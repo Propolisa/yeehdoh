@@ -13,7 +13,7 @@ import {
 export class Sky {
   constructor(scene, options) {
     // 🌌 Create the gradient sky sphere
-    const skybox = Mesh.CreateSphere("skyBox", 10.0, 800, scene);
+    const skybox = Mesh.CreateSphere("skyBox", 10.0, 1600, scene);
    
 
     Effect.ShadersStore.gradientVertexShader = `
@@ -86,13 +86,13 @@ export class Sky {
         sys.particleTexture = texture.clone();
 
         // Color + transparency like fog/smoke demo
-        sys.color1 = new Color4(0.8, 0.8, 0.8, 0.1);
-        sys.color2 = new Color4(0.95, 0.95, 0.95, 0.15);
-        sys.colorDead = new Color4(0.9, 0.9, 0.9, 0.1);
+        sys.color1 = new Color4(0.8, 0.8, 0.8, 0.03);
+        sys.color2 = new Color4(0.95, 0.95, 0.95, 0.07);
+        sys.colorDead = new Color4(0.9, 0.9, 0.9, 0.03);
 
         // Cloud size
         sys.minSize = 25.5;
-        sys.maxSize = 200.0;
+        sys.maxSize = 50.0;
 
         // Static lifetime
         sys.minLifeTime = Number.MAX_SAFE_INTEGER;

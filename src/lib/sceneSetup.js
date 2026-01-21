@@ -467,7 +467,7 @@ export var createScene = function (engine, canvas) {
     // Touch-friendly adjustments
     camera.lowerRadiusLimit = 2;
     camera.upperRadiusLimit = 500;
-    // camera.wheelPrecision = 80; // slow zoom
+    camera.wheelPrecision = 1; // slow zoom
     // camera.panningSensibility = 0; // disable drag-pan (rotate only)
     camera.inertia = 0.8; // smoother orbit feel
     camera.angularSensibilityX = 2500; // swipe sensitivity
@@ -483,7 +483,7 @@ export var createScene = function (engine, canvas) {
     const sun = new DirectionalLight('sun', new Vector3(-1, -2, -1), scene);
     sun.intensity = 1.5
     sun.position = new Vector3(50, 100, 0);
-     const shadowGen = new ShadowGenerator(256, sun); // lower res = faster & softer
+     const shadowGen = new ShadowGenerator(1024, sun); // lower res = faster & softer
 
         shadowGen.useBlurExponentialShadowMap = true; // softer penumbra blur
         shadowGen.blurKernel = 4; // increase for softness

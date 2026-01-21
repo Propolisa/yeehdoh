@@ -832,12 +832,12 @@ export class Landmass {
         // Build mesh from height map
 
         let tex = this.createHeightmapDebugTexture();
-        dumpHeightmapBufferToPNG(
-            this.heightmapDebugBuffer,
-            W,
-            H,
-            "heightmap_debug.png",
-        );
+        // dumpHeightmapBufferToPNG(
+        //     this.heightmapDebugBuffer,
+        //     W,
+        //     H,
+        //     "heightmap_debug.png",
+        // );
 
         this.heightmap_skirt = this.heightmap_skirt ||
             new SkirtForHeightmap(this.heightmapDebugTexture, this.scene, {
