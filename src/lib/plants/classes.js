@@ -7,6 +7,7 @@ import {
     Ray,
     Scalar,
     SolidParticleSystem,
+    Tools,
     TransformNode,
     Vector3,
     VertexData,
@@ -720,6 +721,347 @@ export class Palm extends Plant {
         setTimeout(() => this.finalize(), 1000);
     }
 }
+
+
+export class Cactus extends Plant {
+    constructor(scene, pos, params = {}) {
+        super(scene, pos, params);
+        const A = Animate;
+
+        // ======================================================
+        // 🌵 ENV + RANDOMNESS
+        // ======================================================
+        const fertility = params.fertility ?? 0.5;
+        const moisture = params.moisture ?? 0.3;
+        const aridity = scene.getAridity?.(pos.x, pos.z) ?? 0.6;
+
+        // deterministic-ish seed from position so cactus stays stable
+        const seed = Math.sin(pos.x * 12.9898 + pos.z * 78.233) * 43758.5453;
+        let randState = (seed - Math.floor(seed)) * 1e6;
+        const rand = () => {
+            randState = (randState * 16807) % 2147483647;
+            return (randState & 0x7fffffff) / 2147483647;
+        };
+        const rRange = (a, b) => a + (b - a) * rand();
+
+        // ======================================================
+        // 🎨 MATERIAL (cached, wind-sway wrapped)
+        // ======================================================
+        const MAT = window.GLOBAL_CACHE.MAT;
+        if (!window.GLOBAL_CACHE.CactusMat) {
+            const base = MAT.trunk || MAT.leaf;
+            const mat = base.clone("saguaroCactus");
+            // slightly desaturated cactus green
+            mat.albedoColor = new Color3(0.25, 0.45, 0.28);
+            window.GLOBAL_CACHE.CactusMat = scene.wrapWithWindSway
+                ? scene.wrapWithWindSway(mat)
+                : mat;
+        }
+        const cactusMat = window.GLOBAL_CACHE.CactusMat;
+
+        // ======================================================
+        // 📏 GLOBAL SHAPE PARAMETERS
+        // ======================================================
+        const envFactor = Scalar.Clamp(
+            (fertility * 0.6 + moisture * 0.3 + (1 - aridity) * 0.4) / 1.3,
+            0,
+            1,
+        );
+
+        // height 5–10m-ish
+        const h = Scalar.Lerp(5.0, 10.0, envFactor) * rRange(0.85, 1.15);
+
+        // base and top radii
+        const baseRadius = Scalar.Lerp(0.45, 0.8, envFactor);
+        const topRadius = baseRadius * Scalar.Lerp(0.5, 0.7, 0.5 + rand() * 0.5);
+
+        // ribs
+        const ribCount = 10 + Math.floor(rand() * 5); // 10–14 ribs
+        const ribDepth = Scalar.Lerp(0.12, 0.25, rRange(0.3, 0.9)); // fraction of radius
+
+        // poly throttling → segments/sides
+        const baseSides = 18;
+        const baseSegs = 10;
+        const sides = Math.max(10, window.scaleQuality(baseSides, 0.4));
+        const segs = Math.max(6, window.scaleQuality(baseSegs, 0.4));
+
+        // helper: radius profile along height (without ribbing)
+        const radiusAtHeight = (y) => {
+            const t = Scalar.Clamp(y / h, 0, 1);
+            // slight shoulder around mid-height
+            const shoulder = Math.exp(-Math.pow((t - 0.4) / 0.25, 2)) * 0.12;
+            return Scalar.Lerp(baseRadius, topRadius, t) * (1 + shoulder);
+        };
+
+        // ======================================================
+        // 🧱 TRUNK (cylinder + vertex-warp into ribbed saguaro)
+        // ======================================================
+        const trunk = MeshBuilder.CreateCylinder(
+            "saguaroTrunk",
+            {
+                height: h,
+                diameterTop: topRadius * 2,
+                diameterBottom: baseRadius * 2,
+                tessellation: sides,
+                subdivisions: segs,
+                enclose: true,
+            },
+            scene,
+        );
+
+        // base at y = 0, tip at y = h  (cylinder is centered at origin)
+        trunk.position.y = h / 2;
+
+        // rib + taper + soft rounded top
+        {
+            const positions = trunk.getVerticesData("position");
+            const normals = [];
+            const halfH = h / 2;
+
+            for (let i = 0; i < positions.length; i += 3) {
+                let x = positions[i];
+                let y = positions[i + 1];
+                let z = positions[i + 2];
+
+                // local height 0..1 (0 = base, 1 = top)
+                const t = Scalar.InverseLerp(-halfH, halfH, y);
+
+                const angle = Math.atan2(z, x);
+                const r = Math.sqrt(x * x + z * z) || 1e-4;
+
+                const baseR = radiusAtHeight(t * h); // un-ribbed radius at this height
+
+                // rib profile: cos^2 so we get sharp ridges, soft valleys
+                const ribPhase = angle * ribCount;
+                const ribProfile = Math.pow(Math.max(0, Math.cos(ribPhase)), 2);
+
+                // attenuate ribs near very top & base
+                const ribAtten = Scalar.SmoothStep(0.15, 0.85, t);
+
+                const targetR =
+                    baseR * (1 + ribDepth * ribProfile * ribAtten);
+
+                const radialScale = targetR / r;
+                x *= radialScale;
+                z *= radialScale;
+
+                // extra rounding at top cap (saguaros are very rounded)
+                const topRound =
+                    t > 0.75 ? Math.pow((t - 0.75) / 0.25, 2) : 0;
+                const roundFactor = 1 - 0.2 * Scalar.Clamp(topRound, 0, 1);
+                x *= roundFactor;
+                z *= roundFactor;
+
+                positions[i] = x;
+                positions[i + 1] = y;
+                positions[i + 2] = z;
+            }
+
+            VertexData.ComputeNormals(positions, trunk.getIndices(), normals);
+            trunk.setVerticesData("position", positions);
+            trunk.setVerticesData("normal", normals);
+        }
+
+        // vertex colors: subtle vertical gradient, a bit lighter at top
+        {
+            const positions = trunk.getVerticesData("position");
+            const colors = [];
+            const halfH = h / 2;
+
+            for (let i = 0; i < positions.length; i += 3) {
+                const y = positions[i + 1];
+                const t = Scalar.InverseLerp(-halfH, halfH, y); // 0..1
+
+                const shade = Scalar.Lerp(0.75, 1.1, t);
+                const baseG = 0.45 + envFactor * 0.15;
+
+                const col = new Color4(
+                    0.22 * shade,
+                    baseG * shade,
+                    0.22 * shade,
+                    1,
+                );
+                colors.push(col.r, col.g, col.b, col.a);
+            }
+
+            trunk.setVerticesData("color", colors);
+        }
+
+        this.add(trunk, cactusMat);
+        trunk.scaling.setAll(0);
+
+        // ======================================================
+        // 🌿 ARMS
+        // ======================================================
+
+        const arms = [];
+
+        // arm count scales with height; taller → more arms
+        const nominalArmCount =
+            h < 6.0 ? (rand() < 0.35 ? 1 : 0) : h < 8.0
+            ? 1 + (rand() < 0.5 ? 1 : 0)
+            : 2 + (rand() < 0.5 ? 1 : 0);
+
+        const armCount = Math.min(4, nominalArmCount);
+
+        const usedAngles = [];
+
+        const pickAngle = () => {
+            const maxTries = 10;
+            for (let t = 0; t < maxTries; t++) {
+                const a = rand() * Math.PI * 2;
+                if (
+                    usedAngles.every(
+                        (ua) =>
+                            Math.abs(
+                                Math.atan2(Math.sin(a - ua), Math.cos(a - ua)),
+                            ) > Tools.ToRadians(35),
+                    )
+                ) {
+                    usedAngles.push(a);
+                    return a;
+                }
+            }
+            const fallback = rand() * Math.PI * 2;
+            usedAngles.push(fallback);
+            return fallback;
+        };
+
+        for (let i = 0; i < armCount; i++) {
+            // choose attach height (avoid very top/bottom)
+            let tH = Scalar.Lerp(0.3, 0.8, rand());
+            let yAttach = tH * h;
+
+            // max arm length constrained so tip doesn't pass top
+            const maxArmLenFromTop = (h - yAttach) / 0.95; // we assume ~95% vertical at end
+            const logicalMaxLen = h * 0.5;
+            const hardMaxLen = Math.max(h * 0.2, Math.min(maxArmLenFromTop, logicalMaxLen));
+            const minLen = h * 0.25;
+
+            if (hardMaxLen <= minLen) {
+                // too close to top, slide attach down a bit and recompute once
+                tH = 0.6;
+                yAttach = tH * h;
+            }
+
+            const maxArmLenFromTop2 = (h - yAttach) / 0.95;
+            const hardMaxLen2 = Math.max(
+                h * 0.2,
+                Math.min(maxArmLenFromTop2, logicalMaxLen),
+            );
+            if (hardMaxLen2 <= minLen) continue; // bailout: skip arm
+
+            const armLen = rRange(minLen, hardMaxLen2);
+
+            // trunk radius where arm emerges
+            const trunkR = radiusAtHeight(yAttach);
+
+            // arm radius 0.75–1× trunk radius at emergent point
+            const armR = trunkR * rRange(0.75, 1.0);
+
+            // lateral reach constraint: outer profile <= 2× trunk thickness
+            // trunk thickness ≈ 2 * trunkR → max dist from axis ≈ 4 * trunkR
+            const maxOuterDist = 4 * trunkR;
+
+            // path geometry in group-local coords
+            const angle = pickAngle();
+            const dir = new Vector3(Math.cos(angle), 0, Math.sin(angle));
+
+            // base offset: keep most of the arm volume outside trunk so it doesn't poke through
+            // ensure inner edge is still inside / flush but not going out opposite side
+            const baseCenterDist = trunkR + armR * 0.7;
+            const basePos = dir.scale(baseCenterDist);
+            basePos.y = yAttach;
+
+            // design a quick outward-then-up curve (75–90°)
+            // p0: emergent bulge, p1: most outward, p2/p3: more vertical
+            const midOut = Math.min(
+                baseCenterDist + armR * 1.3,
+                maxOuterDist - armR * 0.6,
+            );
+            const outerDist = Math.min(
+                midOut + armR * 0.4,
+                maxOuterDist - armR * 0.4,
+            );
+
+            const p0 = basePos.clone(); // right at emergence point
+
+            const p1 = dir.scale(midOut);
+            p1.y = yAttach + armLen * 0.2;
+
+            const p2 = dir.scale(outerDist);
+            p2.y = yAttach + armLen * 0.65;
+
+            const p3 = dir.scale(outerDist * 0.95);
+            p3.y = yAttach + armLen; // guaranteed ≤ h due to hardMaxLen
+
+            const path = [p0, p1, p2, p3];
+
+            // Tube with rounded caps and slight belly
+            const arm = MeshBuilder.CreateTube(
+                "saguaroArm",
+                {
+                    path,
+                    tessellation: Math.max(8, Math.floor(sides * 0.6)),
+                    radiusFunction: (idx, dist) => {
+                        const t = idx / (path.length - 1);
+                        // middle belly
+                        const belly = Math.sin(Math.PI * t);
+                        // taper slightly toward tip, keep rounded base & tip
+                        const core = Scalar.Lerp(1.05, 0.7, t);
+                        return armR * (core + 0.25 * belly);
+                    },
+                    cap: Mesh.CAP_ALL,
+                },
+                scene,
+            );
+
+            this.add(arm, cactusMat);
+
+            // vertex colors to match trunk-ish but allow some variation
+            const aPositions = arm.getVerticesData("position");
+            const aColors = [];
+
+            for (let j = 0; j < aPositions.length; j += 3) {
+                const y = aPositions[j + 1];
+                const tVert = Scalar.Clamp(y / h, 0, 1);
+                const shade = Scalar.Lerp(0.8, 1.05, tVert);
+                const jitter = rRange(-0.05, 0.05);
+
+                const col = new Color4(
+                    0.23 * shade,
+                    (0.44 + jitter) * shade,
+                    0.23 * shade,
+                    1,
+                );
+                aColors.push(col.r, col.g, col.b, col.a);
+            }
+            arm.setVerticesData("color", aColors);
+
+            arm.scaling.setAll(0);
+            arms.push(arm);
+        }
+
+        // ======================================================
+        // 🎬 ANIMATION
+        // ======================================================
+        const allParts = [trunk, ...arms];
+
+        allParts.forEach((m, i) => {
+            const delay = i === 0 ? 0 : 80 + rand() * 200;
+            A.popScale(
+                m,
+                25,
+                delay,
+                i === 0 ? "easeOutBack" : "easeOutElastic",
+            );
+        });
+
+        setTimeout(() => this.finalize(), 1000);
+    }
+}
+
+
 
 // ======================================================
 // 🌿 BUSH

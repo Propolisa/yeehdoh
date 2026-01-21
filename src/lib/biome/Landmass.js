@@ -5,11 +5,14 @@ import {
     RawTexture,
     Scene,
     Texture,
+    Tools,
     Vector3,
     VertexBuffer,
 } from "@babylonjs/core";
 import GUI from "lil-gui";
-import { applyProceduralPBR, SkirtForHeightmap } from "./SkirtFromHeightmap";
+import { HybridCache } from "../cache/HybridCache";
+import { SkirtForHeightmap } from "./SkirtFromHeightmap";
+
 /**
  * A cubic noise
  * @param {Number} width The width of the range that can be sampled
@@ -97,6 +100,7 @@ class Random {
         this.n = seed >>> 0;
     }
 }
+
 Random.prototype.MULTIPLIER = 69069;
 Random.prototype.MODULUS = 2 ** 32;
 Random.prototype.INCREMENT = 1;
@@ -349,9 +353,7 @@ class HeightMap {
                 let scale = this.parameters.scale * this.resolution;
                 let height = 0;
                 for (
-                    let octave = 0;
-                    octave < this.parameters.octaves;
-                    ++octave
+                    let octave = 0; octave < this.parameters.octaves; ++octave
                 ) {
                     height += noises[octave].sample(x * scale, y * scale) *
                         influences[octave];
@@ -387,6 +389,95 @@ class HeightMap {
         const nz = doubleRadius * (bottom - top);
         const len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
         return { x: nx / len, y: ny / len, z: nz / len };
+    }
+
+    /**
+     * Serialize the HeightMap into a JSON-serializable plain object.
+     * Does NOT store Terrain wrapper, erosion state, etc. — only the
+     * heightmap itself plus all parameters needed to reconstruct it.
+     */
+    serialize() {
+        return {
+            parameters: {
+                octaves: this.parameters.octaves,
+                scale: this.parameters.scale,
+                influenceFalloff: this.parameters.influenceFalloff,
+                scaleFalloff: this.parameters.scaleFalloff,
+                amplitude: this.parameters.amplitude,
+                heightPower: this.parameters.heightPower,
+            },
+            xValues: this.xValues,
+            yValues: this.yValues,
+            resolution: this.resolution,
+            shape: {
+                type: this.shape.constructor.name,
+                width: this.shape.width,
+                height: this.shape.height,
+                power: this.shape.power,
+            },
+            randomSeed: this.random.n, // preserves noise reproducibility
+            values: Array.from(this.values),
+            maxHeight: this.maxHeight,
+        };
+    }
+
+    /**
+     * Deserialize a HeightMap from a JSON object created by toJSON().
+     * Reconstructs sampler, shape, values, and all dependent fields.
+     */
+    static deserialize(data) {
+        // Rebuild Random
+        const random = new Random(data.randomSeed);
+
+        // Rebuild parameters
+        const params = new HeightMapParameters(
+            data.parameters.octaves,
+            data.parameters.scale,
+            data.parameters.influenceFalloff,
+            data.parameters.scaleFalloff,
+            data.parameters.amplitude,
+            data.parameters.heightPower,
+        );
+
+        // Rebuild shape (currently only cone)
+        let shape;
+        switch (data.shape.type) {
+            case "ShapeCone":
+            default:
+                shape = new ShapeCone(
+                    data.shape.width,
+                    data.shape.height,
+                    data.shape.power,
+                );
+                break;
+        }
+
+        // Construct a HeightMap WITHOUT generating new values
+        const hm = Object.create(HeightMap.prototype);
+
+        hm.parameters = params;
+        hm.xValues = data.xValues;
+        hm.yValues = data.yValues;
+        hm.resolution = data.resolution;
+        hm.shape = shape;
+        hm.random = random;
+
+        // Copy stored heights
+        hm.values = Float64Array.from
+            ? Float64Array.from(data.values)
+            : data.values.slice();
+
+        hm.maxHeight = data.maxHeight;
+
+        // Recreate sampler
+        hm.sampler = new GridSampler(
+            hm.xValues,
+            hm.yValues,
+            hm.values,
+            1 / hm.resolution,
+        );
+
+        return hm;
     }
 }
 
@@ -514,7 +605,8 @@ class Volcanoes {
         for (let y = 0; y < heightMap.yValues; ++y) {
             for (let x = 0; x < heightMap.xValues; ++x) {
                 const height = heightMap.values[x + y * heightMap.xValues];
-                const threshold = (2 *
+                const threshold =
+                    (2 *
                                 rimNoise.sample(
                                     x * heightMap.resolution *
                                         this.parameters.volcanoThresholdScale,
@@ -553,7 +645,7 @@ class Terrain {
         }
     }
     createHeightMap() {
-        this.heightMap = new HeightMap(
+        return new HeightMap(
             this.parameters.heightMapParameters,
             Math.ceil(this.parameters.width / this.parameters.resolution) + 1,
             Math.ceil(this.parameters.height / this.parameters.resolution) + 1,
@@ -562,35 +654,26 @@ class Terrain {
             this.random,
         );
     }
-    erodeCoastal() {
+    erodeCoastal(heightMap) {
         new ErosionCoastal(
             this.parameters.erosionCoastalParameters,
             this.parameters.resolution,
             this.random,
-        ).apply(this.heightMap);
+        ).apply(heightMap);
     }
-    createVolcanoes() {
+    createVolcanoes(heightMap) {
         new Volcanoes(this.parameters.volcanoesParameters, this.random).apply(
-            this.heightMap,
+            heightMap,
         );
     }
-    erodeHydraulic() {
+    erodeHydraulic(heightMap) {
         new ErosionHydraulic(
             this.parameters.erosionHydraulicParameters,
             this.parameters.resolution,
             this.random,
-        ).apply(this.heightMap);
+        ).apply(heightMap);
     }
 }
-
-// ───────────────────────────────────────────────────────────────────────────────
-// Landmass (same class API, but upstream geometry pipeline inside)
-// ───────────────────────────────────────────────────────────────────────────────
-// Landmass.js
-
-// (Assuming you already have the supporting classes imported or in-file: Random, CubicNoise, GridSampler,
-//  HeightMapParameters, ErosionHydraulicParameters, ErosionCoastalParameters, VolcanoesParameters,
-//  HeightMap, TerrainParameters, Terrain, etc. Adjust paths accordingly.)
 
 export class Landmass {
     /**
@@ -610,6 +693,8 @@ export class Landmass {
      */
     constructor(scene, opts = {}) {
         this.scene = scene;
+        this.cache = new HybridCache("landmass");
+
         this.surfaceSampler = null;
         this.surfaceTriangles = null;
 
@@ -712,7 +797,7 @@ export class Landmass {
         return worldPt;
     }
 
-    _buildTerrain(paramOverrides) {
+    async _buildTerrain(paramOverrides) {
         const N = this.subdivisions + 1;
         const resolution = this.size / (N - 1);
 
@@ -732,33 +817,45 @@ export class Landmass {
 
         const random = new Random(this.seed);
         const terrain = new Terrain(terrainParams, random);
-
-        terrain.createHeightMap();
-        terrain.erodeCoastal();
-        terrain.createVolcanoes();
-        terrain.erodeHydraulic();
-
-        this.heightMap = terrain.heightMap;
+        await this.cache
+            .ensure(`${this.seed}/heightMap`, () => {
+                const heightmap = terrain.createHeightMap();
+                terrain.erodeCoastal(heightmap);
+                terrain.createVolcanoes(heightmap);
+                terrain.erodeHydraulic(heightmap);
+                return heightmap.serialize();
+            })
+            .then((value) => {
+                this.heightMap = HeightMap.deserialize(value);
+            });
 
         // Build mesh from height map
 
-        this.createHeightmapDebugTexture();
+        let tex = this.createHeightmapDebugTexture();
+        dumpHeightmapBufferToPNG(
+            this.heightmapDebugBuffer,
+            W,
+            H,
+            "heightmap_debug.png",
+        );
 
         this.heightmap_skirt = this.heightmap_skirt ||
-            new SkirtForHeightmap(this.heightmapDebugTexture, this.scene);
+            new SkirtForHeightmap(this.heightmapDebugTexture, this.scene, {
+                cache: this.cache,
+                cache_prefix: `${this.seed}/skirt_for_heightmap`,
+            });
         return this._waitForTexture(this.heightmapDebugTexture)
-            .then(() =>
-                this.heightmap_skirt.initialized
+            .then(
+                () => (this.heightmap_skirt.initialized
                     ? this.heightmap_skirt.update(this.heightmapDebugTexture)
                     : this.heightmap_skirt.initialize(
                         this.heightmapDebugTexture,
-                    )
-            ).then((mesh) => {
-                applyProceduralPBR(mesh, this.scene, { useTextureBake: true });
-            })
+                    ))
+            )
             .then(() => {
                 this._rebuildSurfaceSampler();
-            });
+            })
+            .then(() => {});
 
         // this._conformUnderwaterToCircularBasin();
     }
@@ -894,6 +991,7 @@ export class Landmass {
             buffer[i] = Math.floor(norm * 255); // 0–255
         }
 
+        this.heightmapDebugBuffer = buffer;
         // Create the RawTexture correctly with full signature
         const tex = new RawTexture(
             buffer,
@@ -994,7 +1092,7 @@ export class Landmass {
             waterline: 3,
         };
 
-        const rebuild = () => {
+        const rebuild = async () => {
             this.dispose();
             const hmParams = new HeightMapParameters(
                 params.octaves,
@@ -1039,7 +1137,7 @@ export class Landmass {
                 volcanoesParameters: volcParams,
             };
 
-            this._buildTerrain(this.params);
+            await this._buildTerrain(this.params);
         };
 
         // GUI layout
@@ -1111,7 +1209,8 @@ function sampleRandomTriangle(sampler) {
     const arr = sampler.cumulativeAreas;
 
     // Binary search for triangle index
-    let lo = 0, hi = arr.length - 1;
+    let lo = 0,
+        hi = arr.length - 1;
     while (lo < hi) {
         const mid = (lo + hi) >> 1;
         if (arr[mid] < r) lo = mid + 1;
@@ -1136,4 +1235,33 @@ function samplePointInTriangle(p0, p1, p2) {
         p0.y * w + p1.y * u + p2.y * v,
         p0.z * w + p1.z * u + p2.z * v,
     );
+}
+export function dumpHeightmapBufferToPNG(
+    buffer, // Uint8Array
+    width,
+    height,
+    filename = "heightmap_debug.png",
+) {
+    const rgba = new Uint8ClampedArray(width * height * 4);
+
+    for (let i = 0; i < buffer.length; i++) {
+        const v = buffer[i];
+        const o = i * 4;
+        rgba[o] = v;
+        rgba[o + 1] = v;
+        rgba[o + 2] = v;
+        rgba[o + 3] = 255;
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+
+    const ctx = canvas.getContext("2d");
+    ctx.putImageData(new ImageData(rgba, width, height), 0, 0);
+
+    canvas.toBlob((blob) => {
+        if (blob) Tools.Download(blob, filename);
+        canvas.width = canvas.height = 0;
+    });
 }

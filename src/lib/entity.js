@@ -1,4 +1,3 @@
-
 // ======================================================
 // 🌍 BASE ENTITY
 
@@ -9,7 +8,7 @@ export class Entity {
     constructor(scene, pos, params = {}) {
         this.scene = scene;
         this.position = pos.clone();
-        this.group = new TransformNode('entity', scene);
+        this.group = new TransformNode(params?.name || "entity", scene);
         this.group.position.copyFrom(pos);
         this.params = params;
         this.baseCenter = pos.clone();

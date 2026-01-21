@@ -1,10 +1,18 @@
-import { Sky } from '@/lib/biome/Sky.js';
-import { Bush, Flower, FlowerCluster, Palm, Tree } from '@/lib/plants/classes.js';
-import { Color3, Scene } from '@babylonjs/core';
-import { Landmass } from './Landmass.js';
-import { Water } from './Water.js';
+import { Sky } from "@/lib/biome/Sky.js";
+import {
+    Bush,
+    Cactus,
+    Flower,
+    FlowerCluster,
+    Palm,
+    Tree,
+} from "@/lib/plants/classes.js";
+import { Color3, Scene } from "@babylonjs/core";
+import { Rock } from "../static/terrain.js";
+import { Landmass } from "./Landmass.js";
+import { Water } from "./Water.js";
 
-const classes = { Tree, Bush, Palm, Flower, FlowerCluster };
+const classes = { Tree, Bush, Palm, Flower, FlowerCluster, Cactus, Rock };
 /**
  * Represents a biome — a self-contained environmental system that manages
  * ambience, terrain (landmass), water, and entities within a Babylon.js scene.
@@ -86,12 +94,12 @@ export class Biome {
      */
     async populate() {
         const scene = this.scene;
-
+        scene.environmentIntensity = 0.8
         if (this.def.ambience) this._applyAmbience(this.def.ambience);
 
         // Create landmass
         this.landmass = new Landmass(scene, this.def.landmass || {});
-        await this.landmass.onBuildCompleteObservable 
+        await this.landmass.onBuildCompleteObservable;
         scene.activeLandmass = this.landmass;
 
         // Create water (if defined in ambience)
@@ -102,31 +110,36 @@ export class Biome {
 
         // Create sky
         this.sky = new Sky(scene, this.def.ambience?.sky || {});
-       
+
         // Spawn entities
         if (Array.isArray(this.def.entities)) {
             for (const ent of this.def.entities) {
                 const cls = classes[ent.class];
                 if (!cls) continue;
 
-                const overrides = typeof ent.overrides === 'function' ? ent.overrides(scene, this.landmass) : (ent.overrides ?? {});
-                for (let i = 0; i < 10; i++) {
-                    const instance = new cls(scene, this.landmass.getRandomSurfacePoint(), {
-                    scene,
-                    biome: this,
-                    overrides,
-                    landmass: this.landmass
-                });
+                const overrides = typeof ent.overrides === "function"
+                    ? ent.overrides(scene, this.landmass)
+                    : (ent.overrides ?? {});
+                for (let i = 0; i < 15; i++) {
+                    const instance = new cls(
+                        scene,
+                        this.landmass.getRandomSurfacePoint(),
+                        {
+                            name: `${ent.class}_${i}`,
+                            scene,
+                            biome: this,
+                            overrides,
+                            landmass: this.landmass,
+                        },
+                    );
 
-                this.entities.push(instance);
-                    
+                    this.entities.push(instance);
                 }
-                
             }
         }
 
         // Optional post-populate callback
-        if (typeof this.def.onPopulate === 'function') {
+        if (typeof this.def.onPopulate === "function") {
             await this.def.onPopulate(scene, this.landmass, this.water);
         }
     }
@@ -147,7 +160,9 @@ export class Biome {
         if (amb.fog) {
             scene.fogMode = amb.fog.mode ?? Scene.FOGMODE_EXP2;
             scene.fogDensity = amb.fog.density / 1000 || 0.00001;
-            scene.fogColor = amb.fog.color ? new Color3(...amb.fog.color) : new Color3(0.5, 0.8, 0.9);
+            scene.fogColor = amb.fog.color
+                ? new Color3(...amb.fog.color)
+                : new Color3(0.5, 0.8, 0.9);
         }
         if (amb.skyColor) scene.clearColor = amb.skyColor;
     }

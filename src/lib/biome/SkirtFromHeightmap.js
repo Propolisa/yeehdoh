@@ -1,3 +1,4 @@
+// biome/SkirtFromHeightmap.js
 import {
     CircleEase,
     Color3,
@@ -30,11 +31,14 @@ import {
 
 const IDENTITY = Matrix.Identity();
 export class SkirtForHeightmap {
-    constructor(texture, scene, { debug = false } = {}) {
+    constructor(texture, scene, { debug = false, cache, cache_prefix } = {}) {
         this.options = { debug };
         this.heightmap_texture = texture;
         this.scene = scene;
         this.camera = scene.activeCamera;
+
+        this.cache = cache;
+        this.cache_prefix = cache_prefix;
     }
 
     async initialize(texture) {
@@ -50,6 +54,7 @@ export class SkirtForHeightmap {
         });
 
         this.initialized = true;
+        await this.postUpdate();
         return this.hexMesh;
     }
 
@@ -65,17 +70,105 @@ export class SkirtForHeightmap {
             heightMultiplier: 15.0,
             targetMesh: this.hexMesh,
         });
+        await this.postUpdate();
         return this.hexMesh;
     }
 
-    runJFA(scene, heightmapTex, config = {}) {
-        return new Promise((resolve) => {
+    async postUpdate() {
+        // ----------------------------------------------------------
+        // CACHE FINAL MESH (positions, normals, uvs, indices only)
+        // ----------------------------------------------------------
+        const mesh = registerOrReuseResource(
+            this.scene,
+            "island",
+            () => {
+                let m = new Mesh("island", this.scene);
+                return m;
+            },
+        );
+        const cacheKey = `${this.cache_prefix}/final_mesh`;
 
+        const saved = await this.cache.get(cacheKey);
+
+        if (saved) {
+            let restored = mesh;
+            mesh.scaling.setAll(1);
+
+            restored.setVerticesData(
+                VertexBuffer.PositionKind,
+                new Float32Array(saved.positions),
+            );
+            restored.setVerticesData(
+                VertexBuffer.NormalKind,
+                new Float32Array(saved.normals),
+            );
+            if (saved.uvs) {
+                restored.setVerticesData(
+                    VertexBuffer.UVKind,
+                    new Float32Array(saved.uvs),
+                );
+            }
+            restored.setIndices(new Uint32Array(saved.indices));
+
+            this.final_mesh = restored;
+        } else {
+            // Use generated mesh then cache it
+            this.final_mesh = mesh;
+
+            const data = {
+                positions: Array.from(
+                    mesh.getVerticesData(VertexBuffer.PositionKind),
+                ),
+                normals: Array.from(
+                    mesh.getVerticesData(VertexBuffer.NormalKind),
+                ),
+                uvs: mesh.getVerticesData(VertexBuffer.UVKind)
+                    ? Array.from(
+                        mesh.getVerticesData(VertexBuffer.UVKind),
+                    )
+                    : null,
+                indices: Array.from(mesh.getIndices()),
+            };
+
+            await this.cache.set(cacheKey, data);
+        }
+
+        // Now apply PBR (possibly cached textures below)
+
+        await applyProceduralPBR(this.final_mesh, this.scene, {
+            useTextureBake: true,
+            cache: this.cache,
+            cache_prefix: `${this.cache_prefix}/skirt_for_heightmap`,
+        });
+        mesh.scaling.set(15, 12, 15);
+        return mesh;
+    }
+
+    async runJFA(scene, heightmapTex, config = {}) {
+        return new Promise(async (resolve) => {
             const padCfg = config.pad ?? 1.0;
             const heightMultiplier = config.heightMultiplier ?? 5.0;
 
             // Make readable copy of original heightmap
-            this.originalReadable = makeReadableCopy(scene, heightmapTex);
+            this.originalReadable = await this.cache.ensure(
+                `${this.cache_prefix}/originalReadable`,
+                async () => {
+                    const rt = makeReadableCopy(scene, heightmapTex);
+                    const arr = await rt.readPixels();
+                    return Array.from(arr); // serialize to JSON-safe
+                },
+            ).then((value) => {
+                // Rehydrate buffer into a CPU-texture-equivalent
+                const arr = new Uint8Array(value);
+                const tex = RawTexture.CreateRGBATexture(
+                    arr,
+                    heightmapTex.getSize().width,
+                    heightmapTex.getSize().height,
+                    scene,
+                    false,
+                );
+                return tex;
+            });
 
             // Apply padding
             this.paddedOriginal = makePaddedTexture(
@@ -120,7 +213,7 @@ export class SkirtForHeightmap {
 
             // Keep reference to target mesh
             const targetMesh = config.targetMesh;
-            targetMesh.scaling.setAll(1)
+            targetMesh.scaling.setAll(1);
             const doStep = (i) => {
                 return new Promise((stepResolve) => {
                     const inputRT = stageRTs[i];
@@ -1010,9 +1103,10 @@ function setupHexMesh(scene, camera, skirt) {
         // ====== 3) Mesh ======
         mesh = registerOrReuseResource(
             scene,
-            "hexCircleWarped",
-            () => {let m  = new Mesh("island", scene)
-               return m
+            "island",
+            () => {
+                let m = new Mesh("island", scene);
+                return m;
             },
         );
 
@@ -1081,7 +1175,11 @@ function setupHexMesh(scene, camera, skirt) {
 
         if (scene.compositeHeightmap) {
             applyHeightmapToMesh(mesh, { strength: heightmapStrength });
-            applyProceduralPBR(mesh, scene, { useTextureBake: true });
+            applyProceduralPBR(mesh, scene, {
+                useTextureBake: true,
+                cache: skirt.cache,
+                cache_prefix: skirt.cache_prefix,
+            });
         }
     }
 
@@ -1518,7 +1616,11 @@ import { COLORS } from "../colors.js";
  *   useTextureBake?: boolean
  *   textureResolution?: number
  */
-export function applyProceduralPBR(mesh, scene, opts = {}) {
+export async function applyProceduralPBR(
+    mesh,
+    scene,
+    opts = { cache: null, cache_prefix: null },
+) {
     const H = scene.compositeHeightmap;
     if (!H) {
         console.error("Composite heightmap not ready.");
@@ -1859,113 +1961,116 @@ export function applyProceduralPBR(mesh, scene, opts = {}) {
         mat.metallic = 0.0;
         mat.roughness = 1.0;
         mat.useRoughnessFromMetallicTextureAlpha = false;
-        
-        mesh.scaling.setAll(10);
+
         return mat;
     }
 
     // -----------------------------------------------------------------------
     // PATH 2: TEXTURE BAKE (same field, sampled in UV / top-down domain)
     // -----------------------------------------------------------------------
+    const textures = await opts.cache.ensure(
+        `${opts.cache_prefix}/textures`,
+        async () => {
+            const albedo = new Uint8Array(texRes * texRes * 4);
+            const orm = new Uint8Array(texRes * texRes * 4); // R=AO, G=Rough, B=Metal, A=1
 
-    const albedo = new Uint8Array(texRes * texRes * 4);
-    const orm = new Uint8Array(texRes * texRes * 4); // R=AO, G=Rough, B=Metal, A=1
+            for (let y = 0; y < texRes; y++) {
+                for (let x = 0; x < texRes; x++) {
+                    const u = x / (texRes - 1);
+                    const v = y / (texRes - 1);
 
-    for (let y = 0; y < texRes; y++) {
-        for (let x = 0; x < texRes; x++) {
-            const u = x / (texRes - 1);
-            const v = y / (texRes - 1);
+                    const hNorm = Scalar.Clamp(H.sampleUV(u, v), 0, 1);
+                    const { slope01, curv01 } = sampleSlopeCurv(H, u, v);
 
-            const hNorm = Scalar.Clamp(H.sampleUV(u, v), 0, 1);
-            const { slope01, curv01 } = sampleSlopeCurv(H, u, v);
+                    let { color, rough, metallic, ao } = evalMaterial(
+                        hNorm,
+                        slope01,
+                        curv01,
+                        u,
+                        v,
+                    );
 
-            let { color, rough, metallic, ao } = evalMaterial(
-                hNorm,
-                slope01,
-                curv01,
-                u,
-                v,
-            );
+                    // POSTERIZATION
+                    if (posterize) {
+                        color = nearestPaletteColor(color);
+                    }
 
-            // POSTERIZATION
-            if (posterize) {
-                color = nearestPaletteColor(color);
+                    const idx = (y * texRes + x) * 4;
+
+                    albedo[idx + 0] = (color.r * 255) | 0;
+                    albedo[idx + 1] = (color.g * 255) | 0;
+                    albedo[idx + 2] = (color.b * 255) | 0;
+                    albedo[idx + 3] = 255;
+
+                    orm[idx + 0] = (ao * 255) | 0; // AO
+                    orm[idx + 1] = (rough * 255) | 0; // Roughness
+                    orm[idx + 2] = (metallic * 255) | 0; // Metallic
+                    orm[idx + 3] = 255;
+                }
             }
 
-            const idx = (y * texRes + x) * 4;
+            return { albedo, orm };
+        },
+    ).then(({ albedo, orm }) => {
+        ensurePlanarUVs(mesh);
 
-            albedo[idx + 0] = (color.r * 255) | 0;
-            albedo[idx + 1] = (color.g * 255) | 0;
-            albedo[idx + 2] = (color.b * 255) | 0;
-            albedo[idx + 3] = 255;
+        const albedoTex = registerOrReuseResource(
+            scene,
+            "albedoTex",
+            () =>
+                new RawTexture(
+                    albedo,
+                    texRes,
+                    texRes,
+                    Engine.TEXTUREFORMAT_RGBA,
+                    scene,
+                    true, // generateMipMaps
+                    false, // invertY
+                    Texture.BILINEAR_SAMPLINGMODE,
+                    Engine.TEXTURETYPE_UNSIGNED_BYTE,
+                ),
+        );
 
-            orm[idx + 0] = (ao * 255) | 0; // AO
-            orm[idx + 1] = (rough * 255) | 0; // Roughness
-            orm[idx + 2] = (metallic * 255) | 0; // Metallic
-            orm[idx + 3] = 255;
+        albedoTex.gammaSpace = true; // sRGB
+
+        const ormTex = registerOrReuseResource(
+            scene,
+            "ormTex",
+            () =>
+                new RawTexture(
+                    orm,
+                    texRes,
+                    texRes,
+                    Engine.TEXTUREFORMAT_RGBA,
+                    scene,
+                    true,
+                    false,
+                    Texture.BILINEAR_SAMPLINGMODE,
+                    Engine.TEXTURETYPE_UNSIGNED_BYTE,
+                ),
+        );
+        ormTex.gammaSpace = false; // linear
+
+        let mat = mesh.material;
+        if (!(mat instanceof PBRMaterial)) {
+            mat = new PBRMaterial("proceduralPBR", scene);
+            mesh.material = mat;
         }
-    }
 
-    const albedoTex = registerOrReuseResource(
-        scene,
-        "albedoTex",
-        () =>
-            new RawTexture(
-                albedo,
-                texRes,
-                texRes,
-                Engine.TEXTUREFORMAT_RGBA,
-                scene,
-                true, // generateMipMaps
-                false, // invertY
-                Texture.BILINEAR_SAMPLINGMODE,
-                Engine.TEXTURETYPE_UNSIGNED_BYTE,
-            ),
-    );
+        mat.useVertexColors = false;
 
-    albedoTex.gammaSpace = true; // sRGB
+        mat.albedoTexture = albedoTex;
+        mat.metallicTexture = ormTex;
 
-    const ormTex = registerOrReuseResource(
-        scene,
-        "ormTex",
-        () =>
-            new RawTexture(
-                orm,
-                texRes,
-                texRes,
-                Engine.TEXTUREFORMAT_RGBA,
-                scene,
-                true,
-                false,
-                Texture.BILINEAR_SAMPLINGMODE,
-                Engine.TEXTURETYPE_UNSIGNED_BYTE,
-            ),
-    );
-    ormTex.gammaSpace = false; // linear
+        // PBR packing: R=AO, G=Roughness, B=Metallic
+        mat.useAmbientOcclusionFromMetallicTextureRed = true;
+        mat.useRoughnessFromMetallicTextureAlpha = false;
+        mat.useRoughnessFromMetallicTextureGreen = true;
+        mat.useMetallnessFromMetallicTextureBlue = true;
+        mat.useAmbientInGrayScale = true;
 
-    ensurePlanarUVs(mesh);
-
-    let mat = mesh.material;
-    if (!(mat instanceof PBRMaterial)) {
-        mat = new PBRMaterial("proceduralPBR", scene);
-        mesh.material = mat;
-    }
-
-    mat.useVertexColors = false;
-
-    mat.albedoTexture = albedoTex;
-    mat.metallicTexture = ormTex;
-
-    // PBR packing: R=AO, G=Roughness, B=Metallic
-    mat.useAmbientOcclusionFromMetallicTextureRed = true;
-    mat.useRoughnessFromMetallicTextureAlpha = false;
-    mat.useRoughnessFromMetallicTextureGreen = true;
-    mat.useMetallnessFromMetallicTextureBlue = true;
-    mat.useAmbientInGrayScale = true;
-
-    mat.metallic = 0.0; // base; overridden per-pixel from packed texture
-    mesh.scaling.setAll(10);
-    return mat;
+        mat.metallic = 0.0; // base; overridden per-pixel from packed texture
+    });
 }
 
 function generatePlanarUVs(mesh, bounds) {

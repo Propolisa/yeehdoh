@@ -39,7 +39,7 @@ export const biomes = {
       },
     },
     landmass: {
-      seed: 1003353377,//665770170 hole in one,
+      seed: 1532027871,// 1003353377,//665770170 hole in one,
       class: "IslandVolcanic",
     },
     entities: [
@@ -48,6 +48,7 @@ export const biomes = {
       { class: "Bush", overrides: { density: 0.8 } },
       { class: "Flower", overrides: { density: 0.8 } },
       { class: "FlowerCluster", overrides: { density: 0.8 } },
+       { class: "Cactus" },
       // {
       //   class: "Fish",
       //   overrides(ctx) {
